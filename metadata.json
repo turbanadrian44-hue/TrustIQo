@@ -1,0 +1,7 @@
+{
+  "name": "Trustiqo",
+  "description": "AI-alapú autószerelő kereső, amely segít elkerülni a csalásokat. Értékelések és vélemények elemzésével találja meg a legmegbízhatóbb szakembereket a közeledben.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
