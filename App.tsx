@@ -8,6 +8,9 @@ import AuthModal from './components/AuthModal';
 import Dashboard from './components/Dashboard';
 import { findTrustworthyMechanics } from './services/geminiService';
 import ReactMarkdown, { Components } from 'react-markdown';
+import { auth, db } from './firebaseConfig';
+import { onAuthStateChanged, signOut } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 
 // --- Helper Components ---
 
@@ -220,6 +223,50 @@ const App: React.FC = () => {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Monitor Auth State Changes
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+        if (firebaseUser) {
+            const userRef = doc(db, "users", firebaseUser.uid);
+            try {
+                const userSnap = await getDoc(userRef);
+                if (userSnap.exists()) {
+                    setUser({ id: firebaseUser.uid, ...userSnap.data() } as User);
+                } else {
+                    // Just in case firestore hasn't synced yet or simple provider login
+                    setUser({
+                        id: firebaseUser.uid,
+                        name: firebaseUser.displayName || "Felhasználó",
+                        email: firebaseUser.email || "",
+                        avatar: firebaseUser.photoURL || undefined
+                    });
+                }
+            } catch (e) {
+                console.error("Error fetching user data:", e);
+                // Fallback basic user info
+                setUser({
+                    id: firebaseUser.uid,
+                    name: firebaseUser.displayName || "Felhasználó",
+                    email: firebaseUser.email || "",
+                    avatar: firebaseUser.photoURL || undefined
+                });
+            }
+        } else {
+            setUser(null);
+        }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogout = async () => {
+      try {
+          await signOut(auth);
+          setUser(null);
+      } catch (error) {
+          console.error("Logout failed", error);
+      }
+  };
+
   const handleLocationFound = (coords: Coordinates) => {
     setCoordinates(coords);
     setLoadingState(LoadingState.IDLE);
@@ -312,7 +359,7 @@ const App: React.FC = () => {
                     <span className="text-sm font-bold text-gray-900">{user.name}</span>
                   </div>
                   <img src={user.avatar} alt={user.name} className="w-9 h-9 rounded-full border border-gray-200 bg-gray-50" />
-                  <button onClick={() => setUser(null)} className="text-sm font-medium text-gray-400 hover:text-gray-600 ml-2">
+                  <button onClick={handleLogout} className="text-sm font-medium text-gray-400 hover:text-gray-600 ml-2">
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" /></svg>
                   </button>
                </div>
@@ -337,7 +384,7 @@ const App: React.FC = () => {
       {/* Main Content Area */}
       {user ? (
          <main className="flex-grow container mx-auto">
-            <Dashboard user={user} onLogout={() => setUser(null)} />
+            <Dashboard user={user} onLogout={handleLogout} />
          </main>
       ) : (
          <>

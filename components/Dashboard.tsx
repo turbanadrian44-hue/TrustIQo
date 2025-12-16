@@ -5,6 +5,8 @@ import Button from './Button';
 import ReactMarkdown from 'react-markdown'; 
 import { analyzeQuote, diagnoseCar, analyzeAd, predictCosts } from '../services/geminiService';
 import Notification, { NotificationType } from './Notification';
+import { db } from '../firebaseConfig';
+import { collection, doc, setDoc, deleteDoc, updateDoc, onSnapshot, query } from 'firebase/firestore';
 
 interface DashboardProps {
   user: User;
@@ -271,13 +273,18 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   const [quotePrice, setQuotePrice] = useState('');
   const [quoteImage, setQuoteImage] = useState<ImageFile | undefined>(undefined);
   const [quoteCarId, setQuoteCarId] = useState<string>('');
-  const [quoteMileage, setQuoteMileage] = useState(''); // New state for mileage
+  const [quoteMileage, setQuoteMileage] = useState('');
 
   const [diagDesc, setDiagDesc] = useState('');
   const [diagImage, setDiagImage] = useState<ImageFile | undefined>(undefined);
+  const [diagCarId, setDiagCarId] = useState<string>('');
+
   const [adText, setAdText] = useState('');
+  const [adImages, setAdImages] = useState<ImageFile[]>([]); // New State for Array of Images
+  
   const [carModel, setCarModel] = useState('');
   const [mileage, setMileage] = useState('');
+  const [predCarId, setPredCarId] = useState<string>('');
 
   // Garage
   const [cars, setCars] = useState<Car[]>([]);
@@ -287,18 +294,39 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   const [newService, setNewService] = useState({ serviceName: '', date: '', cost: '', description: '' });
   const [isAddServiceOpen, setIsAddServiceOpen] = useState(false);
 
+  // Deletion State
+  const [isDeleteCarModalOpen, setIsDeleteCarModalOpen] = useState(false);
+  const [carToDeleteId, setCarToDeleteId] = useState<string | null>(null);
+
+  // ---- FIREBASE DATA FETCHING ----
   useEffect(() => {
-    const savedCars = localStorage.getItem('trustiqo_cars');
-    if (savedCars) {
-      const parsedCars = JSON.parse(savedCars);
-      setCars(parsedCars);
-      if (parsedCars.length > 0 && !selectedCarId) {
-        setSelectedCarId(parsedCars[0].id);
-        // Default select first car in quote analyzer if available
-        setQuoteCarId(parsedCars[0].id);
+    if (!user?.id) return;
+
+    // Real-time listener for user's cars
+    const q = query(collection(db, 'users', user.id, 'cars'));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const carsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Car));
+      setCars(carsData);
+      
+      // Auto-select first car if none selected or if previously selected one is gone
+      if (carsData.length > 0) {
+          if (!selectedCarId || !carsData.find(c => c.id === selectedCarId)) {
+             const defaultId = carsData[0].id;
+             setSelectedCarId(defaultId);
+             setQuoteCarId(defaultId);
+             setDiagCarId(defaultId);
+             setPredCarId(defaultId);
+          }
+      } else {
+         setSelectedCarId(null);
       }
-    }
-  }, []);
+    }, (error) => {
+      console.error("Error fetching cars:", error);
+      showToast("Nem sikerült betölteni az adatokat.", 'error');
+    });
+
+    return () => unsubscribe();
+  }, [user?.id]);
 
   const getSelectedCar = () => cars.find(c => c.id === selectedCarId);
 
@@ -310,30 +338,99 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
     }
   }, [aiResponse]);
 
-  const saveCar = () => {
+  // UX Improvement: Reset inputs when leaving tools
+  const resetToolStates = () => {
+    setAiResponse(null);
+    // Quote
+    setQuoteDesc('');
+    setQuotePrice('');
+    setQuoteImage(undefined);
+    setQuoteMileage('');
+    setQuoteCarId(cars.length > 0 ? cars[0].id : '');
+    
+    // Diag
+    setDiagDesc('');
+    setDiagImage(undefined);
+    setDiagCarId(cars.length > 0 ? cars[0].id : '');
+    
+    // Ad
+    setAdText('');
+    setAdImages([]); // Reset Array
+    
+    // Pred
+    setCarModel('');
+    setMileage('');
+    setPredCarId(cars.length > 0 ? cars[0].id : '');
+  };
+
+  // ---- FIREBASE SAVE ACTIONS ----
+
+  const saveCar = async () => {
     if (!newCar.make || !newCar.model) {
       showToast("A márka és típus megadása kötelező!", 'error');
       return;
     }
-    const carToAdd: Car = {
-      id: Date.now().toString(),
-      make: newCar.make,
-      model: newCar.model,
-      year: newCar.year,
-      plate: newCar.plate,
-      records: []
-    };
-    const updatedCars = [...cars, carToAdd];
-    setCars(updatedCars);
-    setSelectedCarId(carToAdd.id);
-    localStorage.setItem('trustiqo_cars', JSON.stringify(updatedCars));
-    setNewCar({ make: '', model: '', year: '', plate: '' });
-    setIsAddCarOpen(false);
-    showToast("Jármű sikeresen rögzítve!", 'success');
+    setLoading(true);
+    try {
+        const carId = Date.now().toString(); // Simple ID generation
+        const carToAdd: Car = {
+            id: carId,
+            make: newCar.make,
+            model: newCar.model,
+            year: newCar.year,
+            plate: newCar.plate,
+            records: []
+        };
+        
+        await setDoc(doc(db, 'users', user.id, 'cars', carId), carToAdd);
+        
+        setSelectedCarId(carId);
+        setNewCar({ make: '', model: '', year: '', plate: '' });
+        setIsAddCarOpen(false);
+        showToast("Jármű sikeresen rögzítve!", 'success');
+    } catch (e) {
+        console.error(e);
+        showToast("Hiba történt a mentés során.", 'error');
+    } finally {
+        setLoading(false);
+    }
   };
 
-  const saveServiceRecord = () => {
+  const initiateDeleteCar = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation(); // Prevents selecting the car when clicking delete
+    setCarToDeleteId(id);
+    setIsDeleteCarModalOpen(true);
+  };
+
+  const confirmDeleteCar = async () => {
+    if (!carToDeleteId) return;
+    try {
+        await deleteDoc(doc(db, 'users', user.id, 'cars', carToDeleteId));
+        
+        if (selectedCarId === carToDeleteId) {
+           setSelectedCarId(null);
+        }
+        
+        // Update tool selections if necessary (handled by useEffect, but safe to reset)
+        if (quoteCarId === carToDeleteId) setQuoteCarId('');
+        if (diagCarId === carToDeleteId) setDiagCarId('');
+        if (predCarId === carToDeleteId) setPredCarId('');
+
+        setIsDeleteCarModalOpen(false);
+        setCarToDeleteId(null);
+        showToast("Jármű sikeresen törölve!", 'info');
+    } catch (e) {
+        console.error(e);
+        showToast("Hiba történt a törlés során.", 'error');
+    }
+  };
+
+  const saveServiceRecord = async () => {
     if (!selectedCarId) { showToast("Válassz ki egy autót!", 'error'); return; }
+    
+    const carToUpdate = cars.find(c => c.id === selectedCarId);
+    if (!carToUpdate) return;
+
     try {
       const record: ServiceRecord = {
         id: Date.now().toString(),
@@ -342,16 +439,20 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
         description: newService.description,
         cost: Number(newService.cost)
       };
-      const updatedCars = cars.map(car => {
-        if (car.id === selectedCarId) return { ...car, records: [record, ...car.records] };
-        return car;
+      
+      const updatedRecords = [record, ...carToUpdate.records];
+      
+      await updateDoc(doc(db, 'users', user.id, 'cars', selectedCarId), {
+          records: updatedRecords
       });
-      setCars(updatedCars);
-      localStorage.setItem('trustiqo_cars', JSON.stringify(updatedCars));
+
       setNewService({ serviceName: '', date: '', cost: '', description: '' });
       setIsAddServiceOpen(false);
       showToast("Szerviztörténet frissítve!", 'success');
-    } catch (e) { showToast("Hiba történt a mentés során.", 'error'); }
+    } catch (e) { 
+        console.error(e);
+        showToast("Hiba történt a mentés során.", 'error'); 
+    }
   };
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>, setter: (val: ImageFile) => void) => {
@@ -369,6 +470,29 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
       };
       reader.readAsDataURL(file);
     }
+  };
+
+  // Specific handler for Ad Image array
+  const handleAdImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      if (!file.type.startsWith('image/')) { showToast("Kérlek képfájlt tölts fel.", 'error'); return; }
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const base64String = reader.result as string;
+        const matches = base64String.match(/^data:(.+);base64,(.+)$/);
+        if (matches && matches.length === 3) {
+          const newImage = { mimeType: matches[1], data: matches[2] };
+          setAdImages(prev => [...prev, newImage]);
+          showToast("Kép hozzáadva!", 'info');
+        }
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  const removeAdImage = (index: number) => {
+    setAdImages(prev => prev.filter((_, i) => i !== index));
   };
 
   const runAI = async (task: () => Promise<any>) => {
@@ -438,7 +562,13 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   const renderSplitView = (title: string, icon: string, inputs: React.ReactNode, resultType: 'quote' | 'diag' | 'ad' | 'pred') => (
     <div className="animate-fade-in-up flex flex-col h-auto lg:h-[calc(100vh-140px)] lg:min-h-[600px] pb-10 lg:pb-0">
       <div className="flex items-center justify-between mb-6 sticky top-20 z-20 bg-white/80 backdrop-blur-md lg:static lg:bg-transparent py-2 lg:py-0">
-        <button onClick={() => { setCurrentView(DashboardView.HOME); setAiResponse(null); }} className="group flex items-center text-gray-500 hover:text-brand-600 font-bold transition-colors px-3 py-2 rounded-lg hover:bg-white border border-transparent hover:border-gray-200 text-sm">
+        <button 
+          onClick={() => { 
+            resetToolStates();
+            setCurrentView(DashboardView.HOME); 
+          }} 
+          className="group flex items-center text-gray-500 hover:text-brand-600 font-bold transition-colors px-3 py-2 rounded-lg hover:bg-white border border-transparent hover:border-gray-200 text-sm"
+        >
           <svg className="w-4 h-4 mr-2 group-hover:-translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
           Vissza
         </button>
@@ -524,7 +654,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                    <h4 className="font-bold text-amber-800 text-sm mb-1">Nincs még autód!</h4>
                    <p className="text-xs text-amber-700 mb-3">A pontos árazáshoz vidd fel az autód adatait a Garázsba.</p>
                    <button 
-                     onClick={() => setCurrentView(DashboardView.SERVICE_LOG)}
+                     onClick={() => {
+                        setCurrentView(DashboardView.SERVICE_LOG);
+                        setIsAddCarOpen(true);
+                     }}
                      className="bg-amber-100 hover:bg-amber-200 text-amber-900 px-4 py-2 rounded-lg text-xs font-bold transition-colors w-full"
                    >
                      Autó hozzáadása
@@ -576,24 +709,152 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
       {/* ... similar pattern for other views ... */}
       {currentView === DashboardView.DIAGNOSTICS && renderSplitView("AI Diagnosztika", "🔧", (
         <>
+           <div className="mb-4">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 pl-1">Érintett jármű</label>
+              
+              {cars.length === 0 ? (
+                <div className="bg-amber-50 rounded-xl p-4 border border-amber-200 text-center mb-4">
+                   <div className="text-2xl mb-2">🚗</div>
+                   <h4 className="font-bold text-amber-800 text-sm mb-1">Nincs még autód!</h4>
+                   <p className="text-xs text-amber-700 mb-3">A pontos diagnosztikához vidd fel az autód adatait.</p>
+                   <button 
+                     onClick={() => {
+                        setCurrentView(DashboardView.SERVICE_LOG);
+                        setIsAddCarOpen(true);
+                     }}
+                     className="bg-amber-100 hover:bg-amber-200 text-amber-900 px-4 py-2 rounded-lg text-xs font-bold transition-colors w-full"
+                   >
+                     Autó hozzáadása
+                   </button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <select 
+                    value={diagCarId} 
+                    onChange={(e) => setDiagCarId(e.target.value)}
+                    className="w-full rounded-xl border-gray-200 bg-gray-50/50 p-4 text-gray-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 focus:bg-white transition-all shadow-sm appearance-none cursor-pointer"
+                  >
+                    <option value="">Egyéb / Nem listázott jármű</option>
+                    {cars.map(car => (
+                      <option key={car.id} value={car.id}>
+                        {car.make} {car.model} ({car.year})
+                      </option>
+                    ))}
+                  </select>
+                  <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                  </div>
+                </div>
+              )}
+           </div>
+
            <InputField label="Tünetek leírása" rows={6} placeholder="Milyen hangot ad? Mikor? Honnan jön? (pl. Kopogás bal elölről fekvőrendőrnél...)" value={diagDesc} onChange={(e: any) => setDiagDesc(e.target.value)} />
-           <FileUpload label="Fotó (pl. Hibaüzenet)" onUpload={(e) => handleImageUpload(e, setDiagImage)} currentFile={diagImage} />
-           <div className="pt-4"><Button variant="accent" fullWidth onClick={() => runAI(() => diagnoseCar(diagDesc, diagImage))} disabled={!diagDesc} isLoading={loading}>Diagnózis</Button></div>
+           <FileUpload label="Fotó a hibáról" onUpload={(e) => handleImageUpload(e, setDiagImage)} currentFile={diagImage} />
+           <div className="pt-4">
+             <Button 
+               variant="accent" 
+               fullWidth 
+               onClick={() => {
+                 const diagCar = cars.find(c => c.id === diagCarId);
+                 const carDetails = diagCar ? `${diagCar.make} ${diagCar.model} (${diagCar.year})` : undefined;
+                 runAI(() => diagnoseCar(diagDesc, diagImage, carDetails));
+               }} 
+               disabled={!diagDesc} 
+               isLoading={loading}
+             >
+               Diagnózis
+             </Button>
+           </div>
         </>
       ), 'diag')}
 
       {currentView === DashboardView.AD_ANALYZER && renderSplitView("Hirdetés Radar", "🕵️", (
         <>
-           <InputField label="Hirdetés szövege" rows={12} placeholder="Másold be ide a teljes leírást..." value={adText} onChange={(e: any) => setAdText(e.target.value)} />
-           <div className="pt-4"><Button variant="accent" fullWidth onClick={() => runAI(() => analyzeAd(adText))} disabled={!adText} isLoading={loading}>Ellenőrzés</Button></div>
+           <InputField label="Hirdetés szövege vagy Link" rows={12} placeholder="Másold be ide a TELJES hirdetési szöveget, vagy illeszd be a linket (ha támogatott az oldal)..." value={adText} onChange={(e: any) => setAdText(e.target.value)} />
+           <FileUpload label="Hirdetés képei (többet is csatolhatsz)" onUpload={handleAdImageUpload} currentFile={undefined} />
+           
+           {adImages.length > 0 && (
+             <div className="mt-4 grid grid-cols-3 sm:grid-cols-4 gap-3 animate-fade-in-up">
+                {adImages.map((img, idx) => (
+                  <div key={idx} className="relative aspect-square rounded-xl overflow-hidden shadow-sm border border-gray-200 group">
+                     <img src={`data:${img.mimeType};base64,${img.data}`} className="w-full h-full object-cover" alt={`Feltöltött kép ${idx + 1}`} />
+                     <button 
+                       onClick={() => removeAdImage(idx)}
+                       className="absolute top-1 right-1 bg-red-500/80 hover:bg-red-600 text-white rounded-full p-1 transition-colors backdrop-blur-sm opacity-0 group-hover:opacity-100"
+                     >
+                       <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
+                     </button>
+                  </div>
+                ))}
+             </div>
+           )}
+
+           <div className="pt-4"><Button variant="accent" fullWidth onClick={() => runAI(() => analyzeAd(adText, adImages))} disabled={!adText} isLoading={loading}>Ellenőrzés</Button></div>
         </>
       ), 'ad')}
 
       {currentView === DashboardView.PREDICTIONS && renderSplitView("Jövőbelátó", "🔮", (
         <>
-           <InputField label="Autó Típusa" placeholder="pl. Ford Focus MK3 1.6 TDCi" value={carModel} onChange={(e: any) => setCarModel(e.target.value)} />
+           <div className="mb-4">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 pl-1">Érintett jármű</label>
+              
+              {cars.length === 0 ? (
+                <div className="bg-amber-50 rounded-xl p-4 border border-amber-200 text-center mb-4">
+                   <div className="text-2xl mb-2">🚗</div>
+                   <h4 className="font-bold text-amber-800 text-sm mb-1">Nincs még autód!</h4>
+                   <p className="text-xs text-amber-700 mb-3">A költségek becsléséhez vidd fel az autód adatait.</p>
+                   <button 
+                     onClick={() => {
+                        setCurrentView(DashboardView.SERVICE_LOG);
+                        setIsAddCarOpen(true);
+                     }}
+                     className="bg-amber-100 hover:bg-amber-200 text-amber-900 px-4 py-2 rounded-lg text-xs font-bold transition-colors w-full"
+                   >
+                     Autó hozzáadása
+                   </button>
+                </div>
+              ) : (
+                <div className="relative">
+                  <select 
+                    value={predCarId} 
+                    onChange={(e) => setPredCarId(e.target.value)}
+                    className="w-full rounded-xl border-gray-200 bg-gray-50/50 p-4 text-gray-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 focus:bg-white transition-all shadow-sm appearance-none cursor-pointer"
+                  >
+                    {/* REMOVED DEFAULT OPTION */}
+                    {cars.map(car => (
+                      <option key={car.id} value={car.id}>
+                        {car.make} {car.model} ({car.year})
+                      </option>
+                    ))}
+                  </select>
+                  <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                  </div>
+                </div>
+              )}
+           </div>
+
+           {/* REMOVED MANUAL INPUT FIELD */}
+           
            <InputField label="Jelenlegi Futás (KM)" type="number" placeholder="210000" value={mileage} onChange={(e: any) => setMileage(e.target.value)} />
-           <div className="pt-4"><Button variant="accent" fullWidth onClick={() => runAI(() => predictCosts(carModel, mileage))} disabled={!carModel || !mileage} isLoading={loading}>Számítás</Button></div>
+           
+           <div className="pt-4">
+             <Button 
+               variant="accent" 
+               fullWidth 
+               onClick={() => {
+                 const selectedCar = cars.find(c => c.id === predCarId);
+                 // Fallback should theoretically not be hit if UI prevents it, but keeping safe access
+                 if (!selectedCar) return; 
+                 const modelToUse = `${selectedCar.make} ${selectedCar.model} (${selectedCar.year})`;
+                 runAI(() => predictCosts(modelToUse, mileage));
+               }} 
+               disabled={!predCarId || !mileage} 
+               isLoading={loading}
+             >
+               Számítás
+             </Button>
+           </div>
         </>
       ), 'pred')}
 
@@ -625,19 +886,32 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                     key={car.id}
                     onClick={() => setSelectedCarId(car.id)}
                     className={`
-                      relative flex-shrink-0 w-72 p-5 rounded-2xl cursor-pointer transition-all duration-300 snap-center
+                      relative flex-shrink-0 w-72 p-5 rounded-2xl cursor-pointer transition-all duration-300 snap-center group
                       ${selectedCarId === car.id 
                         ? 'bg-gradient-to-br from-brand-600 to-brand-700 text-white shadow-xl shadow-brand-500/30 scale-[1.02] ring-2 ring-brand-500 ring-offset-2' 
                         : 'bg-white border border-gray-200 text-gray-700 hover:border-brand-300 hover:shadow-lg'}
                     `}
                   >
+                    {/* Delete Icon - Positioned Top Right */}
+                    <button 
+                       onClick={(e) => initiateDeleteCar(e, car.id)}
+                       className={`absolute top-2 right-2 p-2 rounded-lg transition-colors z-10
+                         ${selectedCarId === car.id 
+                           ? 'text-brand-100 hover:bg-red-500/20 hover:text-white' 
+                           : 'text-gray-400 hover:bg-red-50 hover:text-red-600'}
+                       `}
+                       title="Autó törlése"
+                    >
+                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+                    </button>
+
                     <div className="flex justify-between items-start mb-4">
                       <div className={`w-10 h-10 rounded-full flex items-center justify-center text-xl ${selectedCarId === car.id ? 'bg-white/20' : 'bg-gray-100'}`}>
                         🚗
                       </div>
-                      {selectedCarId === car.id && <div className="bg-white/20 px-2 py-0.5 rounded text-xs font-bold">Aktív</div>}
+                      {selectedCarId === car.id && <div className="bg-white/20 px-2 py-0.5 rounded text-xs font-bold mr-8">Aktív</div>}
                     </div>
-                    <div className="font-bold text-xl mb-1 truncate">{car.make} {car.model}</div>
+                    <div className="font-bold text-xl mb-1 truncate pr-6">{car.make} {car.model}</div>
                     <div className={`text-sm ${selectedCarId === car.id ? 'text-brand-100' : 'text-gray-500'} mb-4`}>{car.year} • {car.plate || 'Nincs rendszám'}</div>
                     <div className={`text-xs font-medium border-t pt-3 ${selectedCarId === car.id ? 'border-white/20 text-brand-100' : 'border-gray-100 text-gray-400'}`}>
                        {car.records.length} szervizbejegyzés
@@ -715,51 +989,75 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                   )}
                </div>
             )}
-
-            {/* Modals - Keeping functional but cleaner */}
-            {isAddServiceOpen && (
-              <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-                 <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsAddServiceOpen(false)}></div>
-                 <div className="relative bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl animate-fade-in-up">
-                     <h3 className="text-2xl font-bold mb-6 text-gray-900">Bejegyzés Rögzítése</h3>
-                     <div className="space-y-4">
-                        <InputField label="Elvégzett munka" placeholder="pl. Olajcsere" value={newService.serviceName} onChange={(e: any) => setNewService({...newService, serviceName: e.target.value})} />
-                        <InputField label="Dátum" type="date" value={newService.date} onChange={(e: any) => setNewService({...newService, date: e.target.value})} />
-                        <InputField label="Költség (Ft)" type="number" value={newService.cost} onChange={(e: any) => setNewService({...newService, cost: e.target.value})} />
-                        <InputField label="Részletek" rows={3} value={newService.description} onChange={(e: any) => setNewService({...newService, description: e.target.value})} />
-                        <div className="flex gap-3 pt-4">
-                          <Button variant="secondary" fullWidth onClick={() => setIsAddServiceOpen(false)}>Mégse</Button>
-                          <Button fullWidth onClick={saveServiceRecord}>Mentés</Button>
-                        </div>
-                     </div>
-                 </div>
-              </div>
-            )}
-
-            {isAddCarOpen && (
-              <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
-                 <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsAddCarOpen(false)}></div>
-                 <div className="relative bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl animate-fade-in-up">
-                     <h3 className="text-2xl font-bold mb-6 text-gray-900">Új Autó</h3>
-                     <div className="space-y-4">
-                        <InputField label="Márka" placeholder="pl. Ford" value={newCar.make} onChange={(e: any) => setNewCar({...newCar, make: e.target.value})} />
-                        <InputField label="Típus" placeholder="pl. Focus" value={newCar.model} onChange={(e: any) => setNewCar({...newCar, model: e.target.value})} />
-                        <div className="grid grid-cols-2 gap-4">
-                           <InputField label="Évjárat" type="number" value={newCar.year} onChange={(e: any) => setNewCar({...newCar, year: e.target.value})} />
-                           <InputField label="Rendszám" value={newCar.plate} onChange={(e: any) => setNewCar({...newCar, plate: e.target.value})} />
-                        </div>
-                        <div className="flex gap-3 pt-4">
-                          <Button variant="secondary" fullWidth onClick={() => setIsAddCarOpen(false)}>Mégse</Button>
-                          <Button fullWidth onClick={saveCar}>Hozzáadás</Button>
-                        </div>
-                     </div>
-                 </div>
-              </div>
-            )}
-
           </div>
         </div>
       )}
+
+      {/* MODALS MOVED TO ROOT LEVEL TO FIX Z-INDEX/TRANSFORM ISSUES */}
+
+      {isAddServiceOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsAddServiceOpen(false)}></div>
+            <div className="relative bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl animate-fade-in-up">
+                <h3 className="text-2xl font-bold mb-6 text-gray-900">Bejegyzés Rögzítése</h3>
+                <div className="space-y-4">
+                  <InputField label="Elvégzett munka" placeholder="pl. Olajcsere" value={newService.serviceName} onChange={(e: any) => setNewService({...newService, serviceName: e.target.value})} />
+                  <InputField label="Dátum" type="date" value={newService.date} onChange={(e: any) => setNewService({...newService, date: e.target.value})} />
+                  <InputField label="Költség (Ft)" type="number" value={newService.cost} onChange={(e: any) => setNewService({...newService, cost: e.target.value})} />
+                  <InputField label="Részletek" rows={3} value={newService.description} onChange={(e: any) => setNewService({...newService, description: e.target.value})} />
+                  <div className="flex gap-3 pt-4">
+                    <Button variant="secondary" fullWidth onClick={() => setIsAddServiceOpen(false)}>Mégse</Button>
+                    <Button fullWidth onClick={saveServiceRecord}>Mentés</Button>
+                  </div>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {isAddCarOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsAddCarOpen(false)}></div>
+            <div className="relative bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl animate-fade-in-up">
+                <h3 className="text-2xl font-bold mb-6 text-gray-900">Új Autó</h3>
+                <div className="space-y-4">
+                  <InputField label="Márka" placeholder="pl. Ford" value={newCar.make} onChange={(e: any) => setNewCar({...newCar, make: e.target.value})} />
+                  <InputField label="Típus" placeholder="pl. Focus" value={newCar.model} onChange={(e: any) => setNewCar({...newCar, model: e.target.value})} />
+                  <div className="grid grid-cols-2 gap-4">
+                      <InputField label="Évjárat" type="number" value={newCar.year} onChange={(e: any) => setNewCar({...newCar, year: e.target.value})} />
+                      <InputField label="Rendszám" value={newCar.plate} onChange={(e: any) => setNewCar({...newCar, plate: e.target.value})} />
+                  </div>
+                  <div className="flex gap-3 pt-4">
+                    <Button variant="secondary" fullWidth onClick={() => setIsAddCarOpen(false)}>Mégse</Button>
+                    <Button fullWidth onClick={saveCar}>Hozzáadás</Button>
+                  </div>
+                </div>
+            </div>
+        </div>
+      )}
+
+      {/* DELETE CAR CONFIRMATION MODAL */}
+      {isDeleteCarModalOpen && (
+          <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
+            <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsDeleteCarModalOpen(false)}></div>
+            <div className="relative bg-white rounded-3xl p-8 w-full max-w-sm shadow-2xl animate-fade-in-up text-center">
+              <div className="w-16 h-16 bg-red-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <svg className="w-8 h-8 text-red-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
+              </div>
+              <h3 className="text-xl font-bold mb-2 text-gray-900">Biztosan törlöd?</h3>
+              <p className="text-gray-500 mb-6 text-sm">A jármű és a hozzá tartozó összes szervizbejegyzés véglegesen törlődik.</p>
+              <div className="flex gap-3">
+                  <Button variant="secondary" fullWidth onClick={() => setIsDeleteCarModalOpen(false)}>Mégse</Button>
+                  <button 
+                    onClick={confirmDeleteCar}
+                    className="w-full inline-flex items-center justify-center px-6 py-3.5 text-sm font-bold rounded-xl text-white bg-red-600 hover:bg-red-700 shadow-lg shadow-red-500/30 transition-all duration-200"
+                  >
+                    Igen, Törlés
+                  </button>
+              </div>
+            </div>
+          </div>
+      )}
+
     </div>
   );
 };

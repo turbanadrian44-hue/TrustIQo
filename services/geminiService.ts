@@ -12,6 +12,24 @@ interface ImageFile {
   mimeType: string;
 }
 
+// --- Helper to clean JSON from Markdown ---
+const parseJsonFromMarkdown = (text: string): any => {
+  try {
+    // Remove ```json and ``` wrapping
+    let cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
+    // Locate the first { and last } to handle potential intro text
+    const firstBrace = cleanText.indexOf('{');
+    const lastBrace = cleanText.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      cleanText = cleanText.substring(firstBrace, lastBrace + 1);
+    }
+    return JSON.parse(cleanText);
+  } catch (e) {
+    console.error("JSON Parse Error:", e);
+    return {};
+  }
+};
+
 // --- Existing Function (unchanged as it uses Tools) ---
 export const findTrustworthyMechanics = async (
   problem: string,
@@ -123,11 +141,16 @@ export const analyzeQuote = async (description: string, price: string, image?: I
   return JSON.parse(response.text || "{}");
 };
 
-export const diagnoseCar = async (description: string, image?: ImageFile): Promise<DiagnosticResult> => {
+export const diagnoseCar = async (description: string, image?: ImageFile, carDetails?: string): Promise<DiagnosticResult> => {
   if (!apiKey) throw new Error("Hiányzik az API kulcs.");
+
+  const carContext = carDetails ? `Jármű adatok: ${carDetails}` : "Jármű: Nincs specifikálva (általános diagnosztikát végezz)";
 
   const parts: any[] = [{ text: `
     Autószerelő vagy. Diagnosztizáld a hibát a leírás alapján.
+    ${carContext}
+    
+    Vedd figyelembe az adott autótípusra jellemző típushibákat!
     Leírás: ${description}
   `}];
 
@@ -165,33 +188,50 @@ export const diagnoseCar = async (description: string, image?: ImageFile): Promi
   return JSON.parse(response.text || "{}");
 };
 
-export const analyzeAd = async (adText: string): Promise<AdAnalysisResult> => {
+export const analyzeAd = async (adText: string, images: ImageFile[] = []): Promise<AdAnalysisResult> => {
   if (!apiKey) throw new Error("Hiányzik az API kulcs.");
+
+  const parts: any[] = [{ text: `
+    Használt autó kereskedő szakértő vagy. Elemezd ezt a hirdetést.
+    
+    Bemenet (szöveg vagy link): "${adText}"
+    
+    FELADAT:
+    1. Ha a bemenet egy LINK (pl. hasznaltauto.hu, mobile.de), HASZNÁLD a Google Search eszközt a link tartalmának, az autó adatainak (ár, évjárat, leírás) felkutatására.
+    2. Ha szöveg, elemezd a szöveget.
+    3. Ha vannak képek, vesd össze őket a talált adatokkal (pl. sérülések, felszereltség).
+    
+    KIMENETI FORMÁTUM (KÖTELEZŐ):
+    A válaszod KIZÁRÓLAG egy valid JSON objektum legyen (markdown kódblokkban vagy anélkül), az alábbi struktúrával:
+    {
+      "trustScore": number (0-100),
+      "verdictShort": "string (Rövid, ütős főcím)",
+      "redFlags": ["string", "string"],
+      "greenFlags": ["string", "string"],
+      "questionsToAsk": ["string", "string"]
+    }
+    
+    Ne írj magyarázó szöveget a JSON elé vagy mögé.
+  `}];
+
+  if (images.length > 0) {
+    images.forEach(img => {
+      parts.push({ inlineData: { mimeType: img.mimeType, data: img.data } });
+    });
+  }
 
   const response = await ai.models.generateContent({
     model: modelId,
-    contents: { parts: [{ text: `
-      Használt autó kereskedő szakértő vagy. Elemezd ezt a hirdetést.
-      Szöveg: "${adText}"
-      
-      Értékelj szigorúan. Keress rejtett hibákra utaló jeleket.
-    `}]},
+    contents: { parts },
     config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          trustScore: { type: Type.INTEGER, description: "0-100 közötti pontszám" },
-          verdictShort: { type: Type.STRING, description: "Egy ütős főcím" },
-          redFlags: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Gyanús jelek" },
-          greenFlags: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Pozitívumok" },
-          questionsToAsk: { type: Type.ARRAY, items: { type: Type.STRING }, description: "Mit kérdezzen telefonon" }
-        }
-      }
+      // Fontos: Google Search használatakor NEM használhatunk responseMimeType: 'application/json'-t.
+      // Ezért manuálisan parszoljuk a kimenetet.
+      tools: [{ googleSearch: {} }], 
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  const rawText = response.text || "{}";
+  return parseJsonFromMarkdown(rawText);
 };
 
 export const predictCosts = async (carModel: string, mileage: string): Promise<PredictionResult> => {
