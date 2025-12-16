@@ -1,0 +1,304 @@
+
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Car, DashboardView, Coordinates } from '../../types';
+import Button from '../Button';
+import { InputField, FileUpload, ImageFile } from '../DashboardUI';
+import { analyzeQuote, diagnoseCar, analyzeAd, predictCosts, findTrustworthyMechanics } from '../../services/geminiService';
+import { QuoteResultCard, DiagnosticResultCard, AdResultCard, PredictionResultCard } from '../AIResultCards';
+import ReactMarkdown, { Components } from 'react-markdown';
+import { ContactPanel, ExpandableListItem } from '../MarkdownRenderers';
+
+// --- Shared Layout ---
+
+interface SplitViewLayoutProps {
+    title: string;
+    icon: string;
+    onBack: () => void;
+    children: React.ReactNode; // Inputs
+    resultNode: React.ReactNode; // Result Display
+    loading: boolean;
+    outputRef: React.RefObject<HTMLDivElement>;
+}
+
+const SplitViewLayout = ({ title, icon, onBack, children, resultNode, loading, outputRef }: SplitViewLayoutProps) => (
+    <div className="animate-fade-in-up flex flex-col h-auto lg:h-[calc(100vh-140px)] lg:min-h-[600px] pb-10 lg:pb-0">
+      <div className="flex items-center justify-between mb-6 sticky top-20 z-20 bg-white/80 backdrop-blur-md lg:static lg:bg-transparent py-2 lg:py-0">
+        <button 
+          onClick={onBack} 
+          className="group flex items-center text-gray-500 hover:text-brand-600 font-bold transition-colors px-3 py-2 rounded-lg hover:bg-white border border-transparent hover:border-gray-200 text-sm"
+        >
+          <svg className="w-4 h-4 mr-2 group-hover:-translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+          Vissza
+        </button>
+        <div className="flex items-center gap-3">
+           <span className="text-2xl filter drop-shadow-sm">{icon}</span>
+           <h2 className="text-xl font-bold text-gray-900 tracking-tight">{title}</h2>
+        </div>
+      </div>
+
+      <div className="flex-grow grid grid-cols-1 lg:grid-cols-2 gap-6 h-auto lg:h-full lg:overflow-hidden">
+        <div className="bg-white rounded-3xl p-6 md:p-8 shadow-soft border border-gray-100 lg:overflow-y-auto custom-scrollbar flex flex-col order-1">
+           <div className="flex-grow space-y-6">
+              {children}
+           </div>
+           <div className="mt-8 pt-6 border-t border-gray-100 flex items-center justify-center gap-2 text-xs text-gray-400 font-medium">
+             <svg className="w-4 h-4 text-brand-500" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 17.93c-3.95-.49-7-3.85-7-7.93 0-.62.08-1.21.21-1.79L9 15v1c0 1.1.9 2 2 2v1.93zm6.9-2.54c-.26-.81-1-1.39-1.9-1.39h-1v-3c0-.55-.45-1-1-1H8v-2h2c.55 0 1-.45 1-1V7h2c1.1 0 2-.9 2-2v-.41c2.93 1.19 5 4.06 5 7.41 0 2.08-.8 3.97-2.1 5.39z"/></svg>
+           </div>
+        </div>
+
+        <div ref={outputRef} className="bg-slate-50 rounded-3xl p-6 md:p-8 border border-slate-200 lg:overflow-y-auto custom-scrollbar relative min-h-[400px] order-2 shadow-inner">
+           {loading && (
+             <div className="absolute inset-0 flex flex-col items-center justify-center bg-white/80 backdrop-blur-sm z-10 rounded-3xl transition-opacity duration-300">
+                <div className="relative w-20 h-20">
+                   <div className="absolute inset-0 bg-brand-100 rounded-full animate-ping opacity-20"></div>
+                   <div className="absolute inset-0 border-4 border-gray-100 rounded-full"></div>
+                   <div className="absolute inset-0 border-4 border-brand-600 rounded-full border-t-transparent animate-spin"></div>
+                </div>
+                <p className="mt-6 font-bold text-gray-900 text-lg">Elemzés folyamatban...</p>
+                <p className="text-sm text-gray-500 mt-2">Összevetés több ezer adatponttal</p>
+             </div>
+           )}
+           
+           {!loading && !resultNode && (
+               <div className="h-full flex flex-col items-center justify-center text-gray-400 text-center px-6 opacity-60 min-h-[300px]">
+                 <div className="w-24 h-24 bg-white border-2 border-dashed border-gray-200 rounded-full mb-6 flex items-center justify-center">
+                   <span className="text-4xl grayscale opacity-50">{icon}</span>
+                 </div>
+                 <h3 className="text-lg font-bold text-gray-600 mb-2">Itt jelenik meg az eredmény</h3>
+                 <p className="max-w-xs text-sm">
+                   Töltsd ki a bal oldali űrlapot, és az AI azonnal elkészíti a szakértői elemzést.
+                 </p>
+               </div>
+           )}
+
+           {resultNode}
+        </div>
+      </div>
+    </div>
+);
+
+// --- Individual Feature Views ---
+
+export const MechanicSearchView = ({ onBack, showToast }: { onBack: () => void, showToast: any }) => {
+    const [problem, setProblem] = useState('');
+    const [radius, setRadius] = useState(5);
+    const [coords, setCoords] = useState<Coordinates | null>(null);
+    const [result, setResult] = useState<any | null>(null);
+    const [loading, setLoading] = useState(false);
+    const outputRef = useRef<HTMLDivElement>(null);
+
+    const handleGetLocation = () => {
+        if (!navigator.geolocation) { showToast("Helymeghatározás nem támogatott.", 'error'); return; }
+        setLoading(true);
+        navigator.geolocation.getCurrentPosition(
+          (pos) => { setCoords({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); setLoading(false); showToast("Sikeres helymeghatározás!", 'success'); },
+          () => { setLoading(false); showToast("Nem sikerült a helymeghatározás.", 'error'); }
+        );
+    };
+
+    const handleSearch = async () => {
+        if (!coords || !problem) return;
+        setLoading(true);
+        try {
+            const res = await findTrustworthyMechanics(problem, coords, radius);
+            setResult(res);
+        } catch (e: any) { showToast(e.message, 'error'); } 
+        finally { setLoading(false); }
+    };
+
+    const markdownComponents: Components = useMemo(() => ({
+        ul: ({node, children, ...props}) => <ul className="list-none p-0 space-y-3" {...props}>{React.Children.map(children, (child, index) => React.isValidElement(child) ? React.cloneElement(child as React.ReactElement<any>, { isBest: index === 0 }) : child)}</ul>,
+        li: ExpandableListItem,
+        strong: ({node, ...props}) => <span className="block text-lg font-bold text-gray-900 mt-2" {...props} />,
+        blockquote: ContactPanel,
+        p: ({node, ...props}) => <span className="inline leading-relaxed text-gray-700" {...props} />,
+    }), []);
+
+    useEffect(() => { if (result && outputRef.current && window.innerWidth < 1024) outputRef.current.scrollIntoView({ behavior: 'smooth' }); }, [result]);
+
+    return (
+        <SplitViewLayout title="Szerelő Kereső" icon="📍" onBack={onBack} loading={loading} outputRef={outputRef} resultNode={result && (
+            <div className="w-full space-y-6 animate-fade-in-up">
+                <div className="mb-4 flex items-end justify-between border-b border-gray-200 pb-2">
+                   <div><h3 className="text-xl font-bold text-gray-900">Találatok</h3><p className="text-xs text-gray-500">A bizalmi index alapján rangsorolva</p></div>
+                </div>
+                <ReactMarkdown components={markdownComponents}>{result.text}</ReactMarkdown>
+            </div>
+        )}>
+           <div className="mb-4">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 pl-1">Jelenlegi Pozíció</label>
+              <button onClick={handleGetLocation} className={`w-full flex items-center justify-center px-4 py-3 rounded-xl border font-bold text-sm transition-all ${coords ? 'bg-green-50 text-green-700 border-green-200' : 'bg-white text-gray-600 border-gray-200 hover:border-brand-300'}`}>
+                {coords ? <>Helyzet rögzítve</> : <>Helyzetem meghatározása</>}
+              </button>
+           </div>
+           <InputField label="Mi a probléma? (Tünetek)" rows={4} placeholder="pl. Furcsa kopogás..." value={problem} onChange={(e) => setProblem(e.target.value)} />
+           <div className="mb-4">
+              <div className="flex justify-between items-center mb-1 px-1"><label className="text-xs font-bold text-gray-500 uppercase">Keresési Sugár</label><span className="text-sm font-bold text-brand-600 bg-brand-50 px-2 py-1 rounded-lg">{radius} km</span></div>
+              <input type="range" min="1" max="50" value={radius} onChange={(e) => setRadius(Number(e.target.value))} className="w-full cursor-pointer" />
+           </div>
+           <Button variant="primary" fullWidth onClick={handleSearch} disabled={!problem || !coords} isLoading={loading}>Keresés Indítása</Button>
+        </SplitViewLayout>
+    );
+};
+
+export const QuoteAnalyzerView = ({ cars, onBack, showToast }: { cars: Car[], onBack: () => void, showToast: any }) => {
+    const [desc, setDesc] = useState('');
+    const [price, setPrice] = useState('');
+    const [mileage, setMileage] = useState('');
+    const [carId, setCarId] = useState(cars.length > 0 ? cars[0].id : '');
+    const [image, setImage] = useState<ImageFile | undefined>(undefined);
+    const [result, setResult] = useState<any>(null);
+    const [loading, setLoading] = useState(false);
+    const outputRef = useRef<HTMLDivElement>(null);
+
+    const handleRun = async () => {
+        setLoading(true);
+        try {
+            const car = cars.find(c => c.id === carId);
+            const carDetails = car ? `${car.make} ${car.model} (${car.year})` : undefined;
+            const res = await analyzeQuote(desc, price, image, carDetails, mileage);
+            setResult(res);
+        } catch (e) { showToast("Hiba történt", 'error'); } finally { setLoading(false); }
+    };
+    
+    useEffect(() => { if (result && outputRef.current && window.innerWidth < 1024) outputRef.current.scrollIntoView({ behavior: 'smooth' }); }, [result]);
+
+    const handleImage = (e: any) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onloadend = () => setImage({ mimeType: "image/jpeg", data: (reader.result as string).split(',')[1] });
+            reader.readAsDataURL(file);
+        }
+    };
+
+    return (
+        <SplitViewLayout title="Árajánlat Kontroll" icon="💰" onBack={onBack} loading={loading} outputRef={outputRef} resultNode={result && <QuoteResultCard data={result} />}>
+            <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 mb-4 flex gap-3"><div className="text-2xl">🛡️</div><div><h4 className="font-bold text-blue-900 text-sm">Ne fizess rá!</h4><p className="text-xs text-blue-700">Töltsd fel a számlát, mi ellenőrizzük.</p></div></div>
+            <div className="mb-4">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 pl-1">Melyik autó?</label>
+              <select value={carId} onChange={(e) => setCarId(e.target.value)} className="w-full rounded-xl border-gray-200 bg-gray-50/50 p-4 text-gray-900 focus:ring-2 focus:border-brand-500">
+                <option value="">Egyéb</option>{cars.map(c => <option key={c.id} value={c.id}>{c.make} {c.model}</option>)}
+              </select>
+            </div>
+            <InputField label="Jelenlegi Km" type="number" value={mileage} onChange={(e) => setMileage(e.target.value)} />
+            <InputField label="Munka részletezése" rows={4} value={desc} onChange={(e) => setDesc(e.target.value)} />
+            <InputField label="Ár (HUF)" type="number" value={price} onChange={(e) => setPrice(e.target.value)} />
+            <FileUpload label="Számla fotója" onUpload={handleImage} currentFile={image} />
+            <Button variant="accent" fullWidth onClick={handleRun} disabled={!desc || !price} isLoading={loading}>Indítás</Button>
+        </SplitViewLayout>
+    );
+};
+
+export const DiagnosticsView = ({ cars, onBack, showToast }: { cars: Car[], onBack: () => void, showToast: any }) => {
+    const [desc, setDesc] = useState('');
+    const [carId, setCarId] = useState(cars.length > 0 ? cars[0].id : '');
+    const [image, setImage] = useState<ImageFile | undefined>(undefined);
+    const [result, setResult] = useState<any>(null);
+    const [loading, setLoading] = useState(false);
+    const outputRef = useRef<HTMLDivElement>(null);
+
+    const handleRun = async () => {
+        setLoading(true);
+        try {
+            const car = cars.find(c => c.id === carId);
+            const carDetails = car ? `${car.make} ${car.model} (${car.year})` : undefined;
+            const res = await diagnoseCar(desc, image, carDetails);
+            setResult(res);
+        } catch (e) { showToast("Hiba történt", 'error'); } finally { setLoading(false); }
+    };
+    
+    useEffect(() => { if (result && outputRef.current && window.innerWidth < 1024) outputRef.current.scrollIntoView({ behavior: 'smooth' }); }, [result]);
+
+    const handleImage = (e: any) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onloadend = () => setImage({ mimeType: "image/jpeg", data: (reader.result as string).split(',')[1] });
+            reader.readAsDataURL(file);
+        }
+    };
+
+    return (
+        <SplitViewLayout title="AI Diagnosztika" icon="🔧" onBack={onBack} loading={loading} outputRef={outputRef} resultNode={result && <DiagnosticResultCard data={result} />}>
+            <div className="mb-4">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 pl-1">Érintett jármű</label>
+              <select value={carId} onChange={(e) => setCarId(e.target.value)} className="w-full rounded-xl border-gray-200 bg-gray-50/50 p-4 text-gray-900 focus:ring-2 focus:border-brand-500">
+                <option value="">Egyéb</option>{cars.map(c => <option key={c.id} value={c.id}>{c.make} {c.model}</option>)}
+              </select>
+            </div>
+            <InputField label="Tünetek leírása" rows={6} value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Milyen hangot ad? Mikor?" />
+            <FileUpload label="Fotó a hibáról" onUpload={handleImage} currentFile={image} />
+            <Button variant="accent" fullWidth onClick={handleRun} disabled={!desc} isLoading={loading}>Diagnózis</Button>
+        </SplitViewLayout>
+    );
+};
+
+export const AdAnalyzerView = ({ onBack, showToast }: { onBack: () => void, showToast: any }) => {
+    const [text, setText] = useState('');
+    const [images, setImages] = useState<ImageFile[]>([]);
+    const [result, setResult] = useState<any>(null);
+    const [loading, setLoading] = useState(false);
+    const outputRef = useRef<HTMLDivElement>(null);
+
+    const handleRun = async () => {
+        setLoading(true);
+        try { const res = await analyzeAd(text, images); setResult(res); } 
+        catch (e) { showToast("Hiba történt", 'error'); } 
+        finally { setLoading(false); }
+    };
+
+    useEffect(() => { if (result && outputRef.current && window.innerWidth < 1024) outputRef.current.scrollIntoView({ behavior: 'smooth' }); }, [result]);
+
+    const handleImage = (e: any) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onloadend = () => setImages(prev => [...prev, { mimeType: "image/jpeg", data: (reader.result as string).split(',')[1] }]);
+            reader.readAsDataURL(file);
+        }
+    };
+
+    return (
+        <SplitViewLayout title="Hirdetés Radar" icon="🕵️" onBack={onBack} loading={loading} outputRef={outputRef} resultNode={result && <AdResultCard data={result} />}>
+            <InputField label="Hirdetés szövege vagy Link" rows={12} value={text} onChange={(e) => setText(e.target.value)} placeholder="Illeszd be a linket vagy a szöveget..." />
+            <FileUpload label="Képek hozzáadása" onUpload={handleImage} currentFile={undefined} />
+            {images.length > 0 && <div className="mt-2 text-xs text-gray-500">{images.length} kép csatolva</div>}
+            <div className="pt-4"><Button variant="accent" fullWidth onClick={handleRun} disabled={!text} isLoading={loading}>Ellenőrzés</Button></div>
+        </SplitViewLayout>
+    );
+};
+
+export const PredictionsView = ({ cars, onBack, showToast }: { cars: Car[], onBack: () => void, showToast: any }) => {
+    const [mileage, setMileage] = useState('');
+    const [carId, setCarId] = useState(cars.length > 0 ? cars[0].id : '');
+    const [result, setResult] = useState<any>(null);
+    const [loading, setLoading] = useState(false);
+    const outputRef = useRef<HTMLDivElement>(null);
+
+    const handleRun = async () => {
+        setLoading(true);
+        try {
+            const car = cars.find(c => c.id === carId);
+            if (!car) return;
+            const model = `${car.make} ${car.model} (${car.year})`;
+            const res = await predictCosts(model, mileage);
+            setResult(res);
+        } catch (e) { showToast("Hiba történt", 'error'); } finally { setLoading(false); }
+    };
+
+    useEffect(() => { if (result && outputRef.current && window.innerWidth < 1024) outputRef.current.scrollIntoView({ behavior: 'smooth' }); }, [result]);
+
+    return (
+        <SplitViewLayout title="Jövőbelátó" icon="🔮" onBack={onBack} loading={loading} outputRef={outputRef} resultNode={result && <PredictionResultCard data={result} />}>
+            <div className="mb-4">
+              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 pl-1">Érintett jármű</label>
+              <select value={carId} onChange={(e) => setCarId(e.target.value)} className="w-full rounded-xl border-gray-200 bg-gray-50/50 p-4 text-gray-900 focus:ring-2 focus:border-brand-500">
+                {cars.map(c => <option key={c.id} value={c.id}>{c.make} {c.model}</option>)}
+              </select>
+            </div>
+            <InputField label="Jelenlegi Futás (KM)" type="number" value={mileage} onChange={(e) => setMileage(e.target.value)} />
+            <div className="pt-4"><Button variant="accent" fullWidth onClick={handleRun} disabled={!carId || !mileage} isLoading={loading}>Számítás</Button></div>
+        </SplitViewLayout>
+    );
+};
