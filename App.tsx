@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Coordinates, LoadingState, AnalysisResult, User } from './types';
 import LocationRequest from './components/LocationRequest';
 import Button from './components/Button';
@@ -9,42 +9,73 @@ import Dashboard from './components/Dashboard';
 import { findTrustworthyMechanics } from './services/geminiService';
 import ReactMarkdown, { Components } from 'react-markdown';
 import { auth, db } from './firebaseConfig';
-import { onAuthStateChanged, signOut } from "firebase/auth";
-import { doc, getDoc } from "firebase/firestore";
+import { onAuthStateChanged, signOut } from 'firebase/auth';
+import { doc, getDoc, setDoc } from 'firebase/firestore';
 
-// --- Helper Components ---
+// --- Static Data & Helper Functions (Moved outside component for performance) ---
 
-const ContactPanel = ({ children }: { children: React.ReactNode }) => {
-  const getText = (node: React.ReactNode): string => {
+const LOADING_STEPS = [
+  "Adatok feldolgozása...",
+  "Kapcsolódás a szerviz-adatbázishoz...",
+  "Vélemények valós idejű elemzése...",
+  "Bizalmi index számítása...",
+  "Rangsor véglegesítése..."
+];
+
+const extractText = (node: React.ReactNode): string => {
     if (!node) return '';
     if (typeof node === 'string') return node;
-    if (Array.isArray(node)) return node.map(getText).join('\n');
+    if (Array.isArray(node)) return node.map(extractText).join('\n');
     if (React.isValidElement(node)) {
       const element = node as React.ReactElement<any>;
       if (element.props.children) {
-        return getText(element.props.children);
+        return extractText(element.props.children);
       }
     }
     return '';
-  };
+};
 
-  const rawContent = getText(children);
-  const addressMatch = rawContent.match(/📍\s*(.*?)(?=\n|$|📞|🌐|🗺️)/);
-  const phoneMatch = rawContent.match(/📞\s*(.*?)(?=\n|$|🌐|🗺️)/);
-  const webMatch = rawContent.match(/🌐\s*(.*?)(?=\n|$)/);
-  const mapMatch = rawContent.match(/🗺️\s*(.*?)(?=\n|$)/);
-
-  const address = addressMatch ? addressMatch[1].trim() : null;
-  const phone = phoneMatch ? phoneMatch[1].trim() : null;
-  const webRaw = webMatch ? webMatch[1].trim() : null;
-  const mapRaw = mapMatch ? mapMatch[1].trim() : null;
-  const analysisText = rawContent.split(/📍|📞|🌐|🗺️/)[0].trim();
-
-  const safeUrl = (url: string | null) => {
+const safeUrl = (url: string | null, type: 'web' | 'map' = 'web') => {
     if (!url) return undefined;
-    if (url.startsWith('http')) return url;
-    return `https://${url}`;
-  };
+    const cleanUrl = url.trim();
+    if (cleanUrl.length === 0) return undefined;
+    
+    // Ha térkép és nem linknek néz ki, generáljunk kereső linket
+    if (type === 'map' && !cleanUrl.startsWith('http') && !cleanUrl.startsWith('www')) {
+        return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(cleanUrl)}`;
+    }
+
+    if (!cleanUrl.startsWith('http')) {
+        return `https://${cleanUrl}`;
+    }
+    return cleanUrl;
+};
+
+// --- Sub-Components (Moved outside to prevent re-renders) ---
+
+const ContactPanel = ({ children }: { children: React.ReactNode }) => {
+  const rawContent = extractText(children);
+  
+  // Robust parsing: Split by lines instead of fragile regex lookaheads
+  const lines = rawContent.split('\n');
+  const analysisTextParts: string[] = [];
+  let address: string | null = null;
+  let phone: string | null = null;
+  let webRaw: string | null = null;
+  let mapRaw: string | null = null;
+
+  lines.forEach(line => {
+      const trimmed = line.trim();
+      if (!trimmed) return;
+      
+      if (trimmed.includes('📍')) address = trimmed.replace(/.*📍/, '').trim();
+      else if (trimmed.includes('📞')) phone = trimmed.replace(/.*📞/, '').trim();
+      else if (trimmed.includes('🌐')) webRaw = trimmed.replace(/.*🌐/, '').trim();
+      else if (trimmed.includes('🗺️')) mapRaw = trimmed.replace(/.*🗺️/, '').trim();
+      else analysisTextParts.push(trimmed);
+  });
+
+  const analysisText = analysisTextParts.join('\n').trim();
 
   return (
     <div className="mt-6 pt-6 border-t border-gray-100">
@@ -74,7 +105,7 @@ const ContactPanel = ({ children }: { children: React.ReactNode }) => {
 
         {mapRaw && (
           <a 
-            href={safeUrl(mapRaw)}
+            href={safeUrl(mapRaw, 'map')}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center justify-center space-x-2 bg-white border border-gray-200 text-gray-700 hover:bg-gray-50 hover:border-gray-300 font-bold py-3 px-4 rounded-xl transition-all shadow-sm active:scale-95"
@@ -100,11 +131,20 @@ const ContactPanel = ({ children }: { children: React.ReactNode }) => {
   );
 };
 
-const ExpandableListItem = ({ children, isBest, ...props }: any) => {
-  const [isOpen, setIsOpen] = useState(isBest); 
+interface ExpandableListItemProps extends React.HTMLAttributes<HTMLLIElement> {
+    isBest?: boolean;
+    children?: React.ReactNode;
+}
+
+const ExpandableListItem = ({ children, isBest, ...props }: ExpandableListItemProps) => {
+  const [isOpen, setIsOpen] = useState(!!isBest); 
   const childrenArray = React.Children.toArray(children);
+  
+  // Find blockquote safely
   const detailsIndex = childrenArray.findIndex(
-    (child: any) => child.type === 'blockquote' || child.props?.node?.tagName === 'blockquote'
+    (child: any) => 
+      (React.isValidElement(child) && child.type === 'blockquote') || 
+      (child && child.props && child.props.node && child.props.node.tagName === 'blockquote')
   );
   
   let summary = childrenArray;
@@ -115,11 +155,16 @@ const ExpandableListItem = ({ children, isBest, ...props }: any) => {
     details = childrenArray[detailsIndex];
   }
 
+  // Ha nincs részlet (blockquote), ne legyen kattintható és ne mutasson nyilat
+  const hasDetails = !!details;
+
   return (
     <li 
-      className={`glass-panel rounded-2xl p-6 mb-4 transition-all duration-300 cursor-pointer overflow-hidden group border-l-4
-        ${isBest ? 'border-l-amber-400 shadow-xl ring-1 ring-amber-400/20' : isOpen ? 'border-l-brand-500 shadow-lg' : 'border-l-transparent hover:border-l-brand-300 hover:shadow-md'}`}
+      className={`glass-panel rounded-2xl p-6 mb-4 transition-all duration-300 overflow-hidden group border-l-4
+        ${isBest ? 'border-l-amber-400 shadow-xl ring-1 ring-amber-400/20' : isOpen ? 'border-l-brand-500 shadow-lg' : 'border-l-transparent hover:border-l-brand-300 hover:shadow-md'}
+        ${hasDetails ? 'cursor-pointer' : ''}`}
       onClick={(e) => {
+        if (!hasDetails) return;
         const target = e.target as HTMLElement;
         if (target.closest('a') || target.closest('button')) return;
         setIsOpen(!isOpen);
@@ -144,22 +189,24 @@ const ExpandableListItem = ({ children, isBest, ...props }: any) => {
                  </div>
                )}
 
-               {!isOpen && !isBest && (
+               {!isOpen && !isBest && hasDetails && (
                  <div className="flex items-center space-x-2 text-sm text-gray-500">
                     <span className="text-brand-600 font-medium text-xs">Kattints a részletekért</span>
                  </div>
                )}
              </div>
              
-             <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300 transform 
-                ${isOpen ? 'rotate-180 bg-brand-100 text-brand-600' : 'bg-gray-50 text-gray-400 group-hover:bg-gray-100'}`}>
-               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-               </svg>
-             </div>
+             {hasDetails && (
+               <div className={`w-8 h-8 rounded-full flex items-center justify-center transition-all duration-300 transform 
+                  ${isOpen ? 'rotate-180 bg-brand-100 text-brand-600' : 'bg-gray-50 text-gray-400 group-hover:bg-gray-100'}`}>
+                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                 </svg>
+               </div>
+             )}
           </div>
           
-          <div className={`grid transition-all duration-500 ease-in-out ${isOpen ? 'grid-rows-[1fr] opacity-100 mt-2' : 'grid-rows-[0fr] opacity-0'}`}>
+          <div className={`grid transition-all duration-500 ease-in-out ${isOpen && hasDetails ? 'grid-rows-[1fr] opacity-100 mt-2' : 'grid-rows-[0fr] opacity-0'}`}>
             <div className="overflow-hidden">
                {details}
             </div>
@@ -170,24 +217,15 @@ const ExpandableListItem = ({ children, isBest, ...props }: any) => {
   );
 };
 
-// --- DYNAMIC LOADING SCREEN ---
 const LoadingScreen = ({ problem }: { problem: string }) => {
-  const steps = [
-    "Adatok feldolgozása...",
-    "Kapcsolódás a szerviz-adatbázishoz...",
-    "Vélemények valós idejű elemzése...",
-    "Bizalmi index számítása...",
-    "Rangsor véglegesítése..."
-  ];
-
   const [currentStep, setCurrentStep] = useState(0);
 
   useEffect(() => {
     const interval = setInterval(() => {
-      setCurrentStep((prev) => (prev + 1) % steps.length);
+      setCurrentStep((prev) => (prev + 1) % LOADING_STEPS.length);
     }, 1500);
     return () => clearInterval(interval);
-  }, [steps.length]);
+  }, []);
 
   return (
     <div className="flex flex-col items-center justify-center pt-12 md:pt-24 animate-fade-in-up text-center px-4 md:px-6 min-h-[400px]">
@@ -199,9 +237,8 @@ const LoadingScreen = ({ problem }: { problem: string }) => {
         </div>
       </div>
       
-      {/* Dynamic Text - Resized and flexible height to prevent overlapping */}
       <h2 className="text-xl md:text-2xl font-bold text-gray-900 mb-4 transition-all duration-300 min-h-[3.5rem] flex items-center justify-center max-w-md">
-        {steps[currentStep]}
+        {LOADING_STEPS[currentStep]}
       </h2>
       
       <p className="text-gray-500 max-w-sm mt-2 text-sm md:text-base leading-relaxed">
@@ -223,38 +260,55 @@ const App: React.FC = () => {
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Monitor Auth State Changes
+  // Monitor Firebase Auth State Changes
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
-        if (firebaseUser) {
-            const userRef = doc(db, "users", firebaseUser.uid);
-            try {
-                const userSnap = await getDoc(userRef);
-                if (userSnap.exists()) {
-                    setUser({ id: firebaseUser.uid, ...userSnap.data() } as User);
-                } else {
-                    // Just in case firestore hasn't synced yet or simple provider login
-                    setUser({
-                        id: firebaseUser.uid,
-                        name: firebaseUser.displayName || "Felhasználó",
-                        email: firebaseUser.email || "",
-                        avatar: firebaseUser.photoURL || undefined
-                    });
-                }
-            } catch (e) {
-                console.error("Error fetching user data:", e);
-                // Fallback basic user info
-                setUser({
-                    id: firebaseUser.uid,
-                    name: firebaseUser.displayName || "Felhasználó",
-                    email: firebaseUser.email || "",
-                    avatar: firebaseUser.photoURL || undefined
-                });
-            }
-        } else {
-            setUser(null);
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        // Fetch extended user profile from Firestore
+        const userRef = doc(db, 'users', currentUser.uid);
+        try {
+          const userSnap = await getDoc(userRef);
+          
+          if (userSnap.exists()) {
+             const userData = userSnap.data();
+             setUser({
+               id: currentUser.uid,
+               email: currentUser.email || '',
+               name: userData.full_name || currentUser.displayName || currentUser.email || 'Felhasználó',
+               avatar: userData.avatar_url || currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.email}`
+             });
+          } else {
+             // Create profile if not exists (e.g. Google Login first time)
+             const newProfile = {
+                email: currentUser.email,
+                full_name: currentUser.displayName || currentUser.email?.split('@')[0],
+                avatar_url: currentUser.photoURL || `https://api.dicebear.com/7.x/avataaars/svg?seed=${currentUser.email}`,
+                created_at: new Date().toISOString()
+             };
+             await setDoc(userRef, newProfile);
+             
+             setUser({
+               id: currentUser.uid,
+               email: currentUser.email || '',
+               name: newProfile.full_name || '',
+               avatar: newProfile.avatar_url
+             });
+          }
+        } catch (e) {
+          console.error("Error fetching user profile:", e);
+          // Fallback
+          setUser({
+             id: currentUser.uid,
+             email: currentUser.email || '',
+             name: currentUser.displayName || '',
+             avatar: currentUser.photoURL || ''
+          });
         }
+      } else {
+        setUser(null);
+      }
     });
+
     return () => unsubscribe();
   }, []);
 
@@ -297,14 +351,15 @@ const App: React.FC = () => {
     setLoadingState(LoadingState.IDLE);
   };
 
-  const markdownComponents: Components = {
+  // Memoized Markdown Components to prevent re-renders
+  const markdownComponents: Components = useMemo(() => ({
     ul: ({node, children, ...props}) => {
       return (
         <ul className="list-none p-0 space-y-3" {...props}>
           {React.Children.map(children, (child, index) => {
             if (React.isValidElement(child)) {
-              // @ts-ignore
-              return React.cloneElement(child, { isBest: index === 0 });
+              // Proper type checking before cloning
+              return React.cloneElement(child as React.ReactElement<any>, { isBest: index === 0 });
             }
             return child;
           })}
@@ -315,7 +370,7 @@ const App: React.FC = () => {
     strong: ({node, ...props}) => <span className="block text-lg font-bold text-gray-900 mt-2" {...props} />,
     blockquote: ContactPanel,
     p: ({node, ...props}) => <span className="inline leading-relaxed text-gray-700" {...props} />,
-  };
+  }), []);
 
   const renderHero = () => (
     <div className="text-center mb-12 animate-fade-in-up px-4 pt-8">
@@ -481,7 +536,7 @@ const App: React.FC = () => {
                      <p className="text-sm text-gray-500 mt-1">A bizalmi index alapján rangsorolva</p>
                    </div>
                    <span className="text-sm font-medium text-brand-600 bg-brand-50 px-3 py-1 rounded-full shadow-sm border border-brand-100 flex items-center">
-                     <svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 01-2.812-2.812 3.066 3.066 0 00-.723-1.745 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/></svg>
+                     <svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/></svg>
                      Ellenőrizve
                    </span>
                 </div>

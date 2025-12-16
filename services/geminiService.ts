@@ -1,8 +1,21 @@
-
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { AnalysisResult, Coordinates, QuoteAnalysisResult, DiagnosticResult, AdAnalysisResult, PredictionResult } from "../types";
 
-const apiKey = process.env.API_KEY || '';
+// Biztonságos API kulcs kiolvasás Vite és Node környezetben is
+const getApiKey = () => {
+  let key = '';
+  // 1. Próbáljuk meg Vite módon (import.meta.env)
+  if (typeof import.meta !== 'undefined' && (import.meta as any).env) {
+    key = (import.meta as any).env.VITE_API_KEY || (import.meta as any).env.API_KEY || '';
+  }
+  // 2. Ha még nincs meg, és létezik a process (pl. Node build), próbáljuk onnan
+  if (!key && typeof process !== 'undefined' && process.env) {
+    key = process.env.API_KEY || '';
+  }
+  return key;
+};
+
+const apiKey = getApiKey();
 const ai = new GoogleGenAI({ apiKey });
 
 const modelId = "gemini-2.5-flash"; 
@@ -12,20 +25,26 @@ interface ImageFile {
   mimeType: string;
 }
 
-// --- Helper to clean JSON from Markdown ---
+// --- Robust Helper to clean JSON from Markdown ---
 const parseJsonFromMarkdown = (text: string): any => {
+  if (!text) return {};
   try {
-    // Remove ```json and ``` wrapping
+    // 1. Távolítsuk el a Markdown kódblokkokat (```json ... ```)
     let cleanText = text.replace(/```json/g, '').replace(/```/g, '').trim();
-    // Locate the first { and last } to handle potential intro text
+
+    // 2. Keresünk egy JSON-szerű blokkot (kapcsos zárójelek között)
     const firstBrace = cleanText.indexOf('{');
     const lastBrace = cleanText.lastIndexOf('}');
+
     if (firstBrace !== -1 && lastBrace !== -1) {
       cleanText = cleanText.substring(firstBrace, lastBrace + 1);
     }
+    
     return JSON.parse(cleanText);
   } catch (e) {
-    console.error("JSON Parse Error:", e);
+    console.error("JSON Parse Error (Gemini response was invalid):", e);
+    console.debug("Raw text was:", text);
+    // Visszatérünk egy üres objektummal, hogy ne omoljon össze az UI
     return {};
   }
 };
@@ -36,7 +55,7 @@ export const findTrustworthyMechanics = async (
   location: Coordinates,
   radiusKm: number
 ): Promise<AnalysisResult> => {
-  if (!apiKey) throw new Error("Hiányzik az API kulcs.");
+  if (!apiKey) throw new Error("Hiányzik az API kulcs (VITE_API_KEY vagy API_KEY).");
 
   const prompt = `
     Megbízható autószerelőt keresek a közelemben.
@@ -138,7 +157,7 @@ export const analyzeQuote = async (description: string, price: string, image?: I
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  return parseJsonFromMarkdown(response.text || "{}");
 };
 
 export const diagnoseCar = async (description: string, image?: ImageFile, carDetails?: string): Promise<DiagnosticResult> => {
@@ -185,7 +204,7 @@ export const diagnoseCar = async (description: string, image?: ImageFile, carDet
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  return parseJsonFromMarkdown(response.text || "{}");
 };
 
 export const analyzeAd = async (adText: string, images: ImageFile[] = []): Promise<AdAnalysisResult> => {
@@ -279,5 +298,5 @@ export const predictCosts = async (carModel: string, mileage: string): Promise<P
     }
   });
 
-  return JSON.parse(response.text || "{}");
+  return parseJsonFromMarkdown(response.text || "{}");
 };

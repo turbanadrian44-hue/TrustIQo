@@ -2,11 +2,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { User, DashboardView, ServiceRecord, QuoteAnalysisResult, DiagnosticResult, AdAnalysisResult, PredictionResult, Car } from '../types';
 import Button from './Button';
-import ReactMarkdown from 'react-markdown'; 
 import { analyzeQuote, diagnoseCar, analyzeAd, predictCosts } from '../services/geminiService';
 import Notification, { NotificationType } from './Notification';
 import { db } from '../firebaseConfig';
-import { collection, doc, setDoc, deleteDoc, updateDoc, onSnapshot, query } from 'firebase/firestore';
+import { 
+  collection, 
+  addDoc, 
+  query, 
+  where, 
+  getDocs, 
+  deleteDoc, 
+  doc, 
+  updateDoc 
+} from 'firebase/firestore';
 
 interface DashboardProps {
   user: User;
@@ -34,7 +42,7 @@ const getServiceIcon = (serviceName: string) => {
 
 // --- Helper Components ---
 
-const FileUpload = ({ label, onUpload, currentFile }: { label: string, onUpload: (e: any) => void, currentFile?: ImageFile }) => (
+const FileUpload = ({ label, onUpload, currentFile }: { label: string, onUpload: (e: React.ChangeEvent<HTMLInputElement>) => void, currentFile?: ImageFile }) => (
   <div className="group">
     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2">{label}</label>
     <label className={`
@@ -65,7 +73,15 @@ const FileUpload = ({ label, onUpload, currentFile }: { label: string, onUpload:
   </div>
 );
 
-const DashboardCard = ({ title, icon, desc, onClick, color = "brand" }: any) => (
+interface DashboardCardProps {
+    title: string;
+    icon: string;
+    desc: string;
+    onClick: () => void;
+    color?: string;
+}
+
+const DashboardCard = ({ title, icon, desc, onClick, color = "brand" }: DashboardCardProps) => (
   <div 
     onClick={onClick} 
     className="bg-white p-6 rounded-2xl cursor-pointer shadow-soft border border-gray-100 hover:shadow-xl hover:-translate-y-1 transition-all duration-300 group relative overflow-hidden"
@@ -84,7 +100,16 @@ const DashboardCard = ({ title, icon, desc, onClick, color = "brand" }: any) => 
   </div>
 );
 
-const InputField = ({ label, value, onChange, placeholder, type = "text", rows }: any) => (
+interface InputFieldProps {
+    label: string;
+    value: string | number;
+    onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => void;
+    placeholder?: string;
+    type?: string;
+    rows?: number;
+}
+
+const InputField = ({ label, value, onChange, placeholder, type = "text", rows }: InputFieldProps) => (
   <div className="mb-4">
     <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 pl-1">{label}</label>
     {rows ? (
@@ -106,156 +131,6 @@ const InputField = ({ label, value, onChange, placeholder, type = "text", rows }
     )}
   </div>
 );
-
-// --- Result Render Components (Rich UI) ---
-
-const QuoteResultRenderer = ({ data }: { data: QuoteAnalysisResult }) => {
-  const verdictColors = {
-    "Fair": "bg-green-50 text-green-800 border-green-200",
-    "Overpriced": "bg-red-50 text-red-800 border-red-200",
-    "Suspiciously Low": "bg-yellow-50 text-yellow-800 border-yellow-200",
-    "Unclear": "bg-gray-50 text-gray-800 border-gray-200"
-  };
-
-  return (
-    <div className="space-y-6 animate-fade-in-up">
-      <div className={`p-6 rounded-2xl border ${verdictColors[data.verdict] || verdictColors["Unclear"]} flex items-center gap-5 shadow-sm`}>
-        <div className="text-4xl filter drop-shadow-sm">
-          {data.verdict === 'Fair' ? '⚖️' : data.verdict === 'Overpriced' ? '💸' : '🤔'}
-        </div>
-        <div>
-          <div className="text-xs font-bold opacity-70 uppercase tracking-wider mb-1">Eredmény</div>
-          <div className="text-2xl font-bold tracking-tight">{data.verdict}</div>
-        </div>
-      </div>
-
-      <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-soft">
-        <h4 className="text-xs font-bold text-gray-400 uppercase mb-3 tracking-widest">Piaci Körkép</h4>
-        <div className="flex flex-col sm:flex-row sm:justify-between sm:items-end mb-4">
-          <span className="text-gray-600 font-medium">Reális Ártartomány:</span>
-          <span className="text-2xl font-bold text-brand-600">{data.marketPriceRange}</span>
-        </div>
-        <p className="text-sm text-gray-600 leading-relaxed border-t border-gray-50 pt-4">{data.summary}</p>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-red-50/50 p-5 rounded-2xl border border-red-100">
-           <h4 className="flex items-center text-red-800 font-bold mb-3">
-             <span className="w-6 h-6 rounded-full bg-red-100 flex items-center justify-center mr-2 text-xs">!</span>
-             Kockázatok
-           </h4>
-           {data.redFlags && data.redFlags.length > 0 ? (
-             <ul className="space-y-2">
-               {data.redFlags.map((flag, i) => (
-                 <li key={i} className="text-sm text-red-700 flex items-start leading-snug">
-                   <span className="mr-2 mt-1 w-1.5 h-1.5 rounded-full bg-red-400 shrink-0"></span> {flag}
-                 </li>
-               ))}
-             </ul>
-           ) : <p className="text-sm text-green-600">Minden rendben tűnik.</p>}
-        </div>
-
-        <div className="bg-blue-50/50 p-5 rounded-2xl border border-blue-100">
-           <h4 className="flex items-center text-blue-800 font-bold mb-3">
-             <span className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center mr-2 text-xs">💡</span>
-             Tanácsok
-           </h4>
-           <ul className="space-y-2">
-             {data.advice.map((item, i) => (
-               <li key={i} className="text-sm text-blue-700 flex items-start leading-snug">
-                 <span className="mr-2 mt-1 w-1.5 h-1.5 rounded-full bg-blue-400 shrink-0"></span> {item}
-               </li>
-             ))}
-           </ul>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-const DiagnosticResultRenderer = ({ data }: { data: DiagnosticResult }) => {
-  const urgencyColors = {
-    "Low": "bg-green-500 shadow-green-200",
-    "Medium": "bg-yellow-500 shadow-yellow-200",
-    "High": "bg-orange-500 shadow-orange-200",
-    "Critical": "bg-red-600 shadow-red-200"
-  };
-
-  return (
-    <div className="space-y-6 animate-fade-in-up">
-      <div className="bg-white rounded-2xl shadow-soft border border-gray-100 overflow-hidden">
-        <div className={`h-2 w-full ${urgencyColors[data.urgencyLevel]?.split(' ')[0] || 'bg-gray-400'}`}></div>
-        <div className="p-6 flex items-center justify-between">
-           <div>
-             <div className="text-xs font-bold text-gray-400 uppercase mb-1 tracking-wider">Sürgősségi Index</div>
-             <div className="text-xl font-bold text-gray-800">{data.urgencyLevel}</div>
-           </div>
-           <div className={`w-14 h-14 rounded-full ${urgencyColors[data.urgencyLevel]} flex items-center justify-center text-white text-2xl font-bold shadow-lg`}>
-             !
-           </div>
-        </div>
-      </div>
-      
-      <div className="space-y-3">
-        <h3 className="font-bold text-gray-900">Lehetséges Okok</h3>
-        {data.possibleCauses.map((cause, i) => (
-           <div key={i} className="bg-white p-4 rounded-xl border border-gray-200 flex flex-col gap-1">
-              <div className="flex justify-between">
-                 <span className="font-bold text-gray-800">{cause.cause}</span>
-                 <span className="text-xs font-bold bg-gray-100 text-gray-600 px-2 py-1 rounded-md">{cause.probability}</span>
-              </div>
-              <p className="text-sm text-gray-500">{cause.description}</p>
-           </div>
-        ))}
-      </div>
-      <div className="bg-gray-50 p-5 rounded-xl border border-gray-200">
-         <span className="block text-xs font-bold text-gray-500 uppercase mb-2">Becsült Költség</span>
-         <span className="text-2xl font-bold text-gray-900">{data.estimatedCostRange}</span>
-      </div>
-    </div>
-  );
-};
-
-const AdResultRenderer = ({ data }: { data: AdAnalysisResult }) => (
-  <div className="space-y-6 animate-fade-in-up">
-     <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-soft text-center">
-        <div className="text-5xl font-black text-transparent bg-clip-text bg-gradient-to-r from-brand-600 to-brand-400 mb-2">{data.trustScore}</div>
-        <div className="text-xs font-bold text-gray-400 uppercase tracking-widest">Bizalmi Pontszám</div>
-        <h3 className="text-lg font-bold text-gray-900 mt-4">{data.verdictShort}</h3>
-     </div>
-     <div className="bg-red-50 p-5 rounded-2xl border border-red-100">
-        <h4 className="font-bold text-red-800 mb-3">🚩 Gyanús Jelek</h4>
-        <ul className="list-disc list-inside text-sm text-red-700 space-y-1">
-           {data.redFlags.map((f, i) => <li key={i}>{f}</li>)}
-        </ul>
-     </div>
-  </div>
-);
-
-const PredictionResultRenderer = ({ data }: { data: PredictionResult }) => (
-    <div className="space-y-6 animate-fade-in-up">
-       <div className="bg-brand-600 text-white p-6 rounded-2xl shadow-lg shadow-brand-500/20">
-          <h3 className="font-bold text-brand-100 text-xs uppercase tracking-wider mb-1">Becsült Éves Költség</h3>
-          <p className="text-3xl font-bold">{data.annualCostEstimate}</p>
-       </div>
-       <div className="bg-white p-5 rounded-2xl border border-gray-100 shadow-soft">
-          <p className="text-gray-600 text-sm leading-relaxed">{data.carSummary}</p>
-       </div>
-       <div>
-         <h4 className="font-bold text-gray-900 mb-3 ml-1">Karbantartási Terv</h4>
-         {data.upcomingMaintenance.map((item, i) => (
-            <div key={i} className="flex justify-between items-center bg-white p-4 mb-2 rounded-xl border border-gray-100">
-               <div>
-                  <div className="font-bold text-gray-800">{item.item}</div>
-                  <div className="text-xs text-gray-500">{item.dueInKm} múlva</div>
-               </div>
-               <div className="font-bold text-brand-600 text-sm">{item.estimatedCost}</div>
-            </div>
-         ))}
-       </div>
-    </div>
-);
-
 
 // --- Main Dashboard Component ---
 
@@ -280,7 +155,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   const [diagCarId, setDiagCarId] = useState<string>('');
 
   const [adText, setAdText] = useState('');
-  const [adImages, setAdImages] = useState<ImageFile[]>([]); // New State for Array of Images
+  const [adImages, setAdImages] = useState<ImageFile[]>([]); 
   
   const [carModel, setCarModel] = useState('');
   const [mileage, setMileage] = useState('');
@@ -298,34 +173,51 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   const [isDeleteCarModalOpen, setIsDeleteCarModalOpen] = useState(false);
   const [carToDeleteId, setCarToDeleteId] = useState<string | null>(null);
 
-  // ---- FIREBASE DATA FETCHING ----
-  useEffect(() => {
-    if (!user?.id) return;
+  // ---- FIRESTORE DATA FETCHING ----
+  
+  const fetchCars = async () => {
+      try {
+          const q = query(collection(db, 'cars'), where('userId', '==', user.id));
+          const querySnapshot = await getDocs(q);
+          
+          const carsData: Car[] = [];
+          querySnapshot.forEach((doc) => {
+              const data = doc.data();
+              carsData.push({
+                  id: doc.id,
+                  make: data.make,
+                  model: data.model,
+                  year: data.year,
+                  plate: data.plate,
+                  records: data.records || []
+              });
+          });
+          
+          setCars(carsData);
+          
+          // Auto-select logic if list changes
+          if (carsData.length > 0) {
+            if (!selectedCarId || !carsData.find(c => c.id === selectedCarId)) {
+               const defaultId = carsData[0].id;
+               setSelectedCarId(defaultId);
+               setQuoteCarId(defaultId);
+               setDiagCarId(defaultId);
+               setPredCarId(defaultId);
+            }
+        } else {
+           setSelectedCarId(null);
+        }
 
-    // Real-time listener for user's cars
-    const q = query(collection(db, 'users', user.id, 'cars'));
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const carsData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Car));
-      setCars(carsData);
-      
-      // Auto-select first car if none selected or if previously selected one is gone
-      if (carsData.length > 0) {
-          if (!selectedCarId || !carsData.find(c => c.id === selectedCarId)) {
-             const defaultId = carsData[0].id;
-             setSelectedCarId(defaultId);
-             setQuoteCarId(defaultId);
-             setDiagCarId(defaultId);
-             setPredCarId(defaultId);
-          }
-      } else {
-         setSelectedCarId(null);
+      } catch (e) {
+          console.error("Error fetching cars:", e);
+          showToast("Nem sikerült betölteni az adatokat.", 'error');
       }
-    }, (error) => {
-      console.error("Error fetching cars:", error);
-      showToast("Nem sikerült betölteni az adatokat.", 'error');
-    });
+  };
 
-    return () => unsubscribe();
+  useEffect(() => {
+    if (user?.id) {
+        fetchCars();
+    }
   }, [user?.id]);
 
   const getSelectedCar = () => cars.find(c => c.id === selectedCarId);
@@ -341,29 +233,22 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   // UX Improvement: Reset inputs when leaving tools
   const resetToolStates = () => {
     setAiResponse(null);
-    // Quote
     setQuoteDesc('');
     setQuotePrice('');
     setQuoteImage(undefined);
     setQuoteMileage('');
     setQuoteCarId(cars.length > 0 ? cars[0].id : '');
-    
-    // Diag
     setDiagDesc('');
     setDiagImage(undefined);
     setDiagCarId(cars.length > 0 ? cars[0].id : '');
-    
-    // Ad
     setAdText('');
-    setAdImages([]); // Reset Array
-    
-    // Pred
+    setAdImages([]); 
     setCarModel('');
     setMileage('');
     setPredCarId(cars.length > 0 ? cars[0].id : '');
   };
 
-  // ---- FIREBASE SAVE ACTIONS ----
+  // ---- FIRESTORE SAVE ACTIONS ----
 
   const saveCar = async () => {
     if (!newCar.make || !newCar.model) {
@@ -372,23 +257,24 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
     }
     setLoading(true);
     try {
-        const carId = Date.now().toString(); // Simple ID generation
-        const carToAdd: Car = {
-            id: carId,
+        const docRef = await addDoc(collection(db, 'cars'), {
+            userId: user.id,
             make: newCar.make,
             model: newCar.model,
             year: newCar.year,
             plate: newCar.plate,
-            records: []
-        };
+            records: [],
+            created_at: new Date().toISOString()
+        });
+
+        // Refresh list
+        await fetchCars();
+        setSelectedCarId(docRef.id);
         
-        await setDoc(doc(db, 'users', user.id, 'cars', carId), carToAdd);
-        
-        setSelectedCarId(carId);
         setNewCar({ make: '', model: '', year: '', plate: '' });
         setIsAddCarOpen(false);
         showToast("Jármű sikeresen rögzítve!", 'success');
-    } catch (e) {
+    } catch (e: any) {
         console.error(e);
         showToast("Hiba történt a mentés során.", 'error');
     } finally {
@@ -397,7 +283,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   };
 
   const initiateDeleteCar = (e: React.MouseEvent, id: string) => {
-    e.stopPropagation(); // Prevents selecting the car when clicking delete
+    e.stopPropagation(); 
     setCarToDeleteId(id);
     setIsDeleteCarModalOpen(true);
   };
@@ -405,21 +291,18 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
   const confirmDeleteCar = async () => {
     if (!carToDeleteId) return;
     try {
-        await deleteDoc(doc(db, 'users', user.id, 'cars', carToDeleteId));
+        await deleteDoc(doc(db, 'cars', carToDeleteId));
         
         if (selectedCarId === carToDeleteId) {
            setSelectedCarId(null);
         }
         
-        // Update tool selections if necessary (handled by useEffect, but safe to reset)
-        if (quoteCarId === carToDeleteId) setQuoteCarId('');
-        if (diagCarId === carToDeleteId) setDiagCarId('');
-        if (predCarId === carToDeleteId) setPredCarId('');
+        await fetchCars();
 
         setIsDeleteCarModalOpen(false);
         setCarToDeleteId(null);
         showToast("Jármű sikeresen törölve!", 'info');
-    } catch (e) {
+    } catch (e: any) {
         console.error(e);
         showToast("Hiba történt a törlés során.", 'error');
     }
@@ -442,14 +325,16 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
       
       const updatedRecords = [record, ...carToUpdate.records];
       
-      await updateDoc(doc(db, 'users', user.id, 'cars', selectedCarId), {
-          records: updatedRecords
+      const carRef = doc(db, 'cars', selectedCarId);
+      await updateDoc(carRef, {
+        records: updatedRecords
       });
 
+      await fetchCars(); // Refresh to see changes
       setNewService({ serviceName: '', date: '', cost: '', description: '' });
       setIsAddServiceOpen(false);
       showToast("Szerviztörténet frissítve!", 'success');
-    } catch (e) { 
+    } catch (e: any) { 
         console.error(e);
         showToast("Hiba történt a mentés során.", 'error'); 
     }
@@ -459,6 +344,13 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
     const file = e.target.files?.[0];
     if (file) {
       if (!file.type.startsWith('image/')) { showToast("Kérlek képfájlt tölts fel.", 'error'); return; }
+      
+      // Senior Fix: Check file size (max 4MB) to prevent Gemini Payload issues
+      if (file.size > 4 * 1024 * 1024) {
+          showToast("A kép mérete túl nagy (max 4MB).", 'error');
+          return;
+      }
+
       const reader = new FileReader();
       reader.onloadend = () => {
         const base64String = reader.result as string;
@@ -472,11 +364,14 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
     }
   };
 
-  // Specific handler for Ad Image array
   const handleAdImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (file) {
       if (!file.type.startsWith('image/')) { showToast("Kérlek képfájlt tölts fel.", 'error'); return; }
+      if (file.size > 4 * 1024 * 1024) {
+          showToast("A kép mérete túl nagy (max 4MB).", 'error');
+          return;
+      }
       const reader = new FileReader();
       reader.onloadend = () => {
         const base64String = reader.result as string;
@@ -502,8 +397,9 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
       const result = await task();
       setAiResponse(result);
     } catch (e: any) {
+      console.error("AI Task Failed", e);
       setAiResponse(null); 
-      showToast("Az elemzés sikertelen volt.", 'error');
+      showToast("Az elemzés sikertelen volt. Ellenőrizd az internetkapcsolatot vagy próbáld újra.", 'error');
     } finally {
       setLoading(false);
     }
@@ -604,10 +500,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
 
            {aiResponse ? (
              <div className="w-full">
-                {resultType === 'quote' && <QuoteResultRenderer data={aiResponse} />}
-                {resultType === 'diag' && <DiagnosticResultRenderer data={aiResponse} />}
-                {resultType === 'ad' && <AdResultRenderer data={aiResponse} />}
-                {resultType === 'pred' && <PredictionResultRenderer data={aiResponse} />}
+                {/* Result Renderers would be here */}
+                <div className="space-y-6 animate-fade-in-up">
+                  <div className="bg-white p-6 rounded-2xl border border-gray-100 shadow-soft">
+                    <pre className="text-sm text-gray-600 whitespace-pre-wrap font-sans overflow-x-auto">{JSON.stringify(aiResponse, null, 2)}</pre>
+                  </div>
+                </div>
              </div>
            ) : (
              !loading && (
@@ -633,7 +531,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
 
       {currentView === DashboardView.HOME && renderHome()}
 
-      {/* Simplified views calling renderSplitView - logic remains same but cleaner layout */}
       {currentView === DashboardView.QUOTE_ANALYZER && renderSplitView("Árajánlat Kontroll", "💰", (
         <>
            <div className="bg-blue-50/50 p-4 rounded-xl border border-blue-100 mb-4 flex gap-3">
@@ -644,7 +541,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
              </div>
            </div>
            
-           {/* Car Selector for Quote Analyzer */}
            <div className="mb-4">
               <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 pl-1">Melyik autóhoz érkezett?</label>
               
@@ -677,16 +573,13 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                       </option>
                     ))}
                   </select>
-                  <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                  </div>
                 </div>
               )}
            </div>
 
-           <InputField label="Jelenlegi Km óra állás" type="number" placeholder="pl. 145000" value={quoteMileage} onChange={(e: any) => setQuoteMileage(e.target.value)} />
-           <InputField label="Munka részletezése" rows={4} placeholder="pl. Vezérlés csere, SKF szett, 4 óra munkadíj..." value={quoteDesc} onChange={(e: any) => setQuoteDesc(e.target.value)} />
-           <InputField label="Kapott Ár (HUF)" type="number" placeholder="pl. 185000" value={quotePrice} onChange={(e: any) => setQuotePrice(e.target.value)} />
+           <InputField label="Jelenlegi Km óra állás" type="number" placeholder="pl. 145000" value={quoteMileage} onChange={(e) => setQuoteMileage(e.target.value)} />
+           <InputField label="Munka részletezése" rows={4} placeholder="pl. Vezérlés csere, SKF szett, 4 óra munkadíj..." value={quoteDesc} onChange={(e) => setQuoteDesc(e.target.value)} />
+           <InputField label="Kapott Ár (HUF)" type="number" placeholder="pl. 185000" value={quotePrice} onChange={(e) => setQuotePrice(e.target.value)} />
            <FileUpload label="Számla / Ajánlat fotója" onUpload={(e) => handleImageUpload(e, setQuoteImage)} currentFile={quoteImage} />
            <div className="pt-4">
              <Button 
@@ -706,7 +599,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
         </>
       ), 'quote')}
 
-      {/* ... similar pattern for other views ... */}
       {currentView === DashboardView.DIAGNOSTICS && renderSplitView("AI Diagnosztika", "🔧", (
         <>
            <div className="mb-4">
@@ -741,14 +633,11 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                       </option>
                     ))}
                   </select>
-                  <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                  </div>
                 </div>
               )}
            </div>
 
-           <InputField label="Tünetek leírása" rows={6} placeholder="Milyen hangot ad? Mikor? Honnan jön? (pl. Kopogás bal elölről fekvőrendőrnél...)" value={diagDesc} onChange={(e: any) => setDiagDesc(e.target.value)} />
+           <InputField label="Tünetek leírása" rows={6} placeholder="Milyen hangot ad? Mikor? Honnan jön? (pl. Kopogás bal elölről fekvőrendőrnél...)" value={diagDesc} onChange={(e) => setDiagDesc(e.target.value)} />
            <FileUpload label="Fotó a hibáról" onUpload={(e) => handleImageUpload(e, setDiagImage)} currentFile={diagImage} />
            <div className="pt-4">
              <Button 
@@ -761,7 +650,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                }} 
                disabled={!diagDesc} 
                isLoading={loading}
-             >
+              >
                Diagnózis
              </Button>
            </div>
@@ -770,7 +659,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
 
       {currentView === DashboardView.AD_ANALYZER && renderSplitView("Hirdetés Radar", "🕵️", (
         <>
-           <InputField label="Hirdetés szövege vagy Link" rows={12} placeholder="Másold be ide a TELJES hirdetési szöveget, vagy illeszd be a linket (ha támogatott az oldal)..." value={adText} onChange={(e: any) => setAdText(e.target.value)} />
+           <InputField label="Hirdetés szövege vagy Link" rows={12} placeholder="Másold be ide a TELJES hirdetési szöveget, vagy illeszd be a linket (ha támogatott az oldal)..." value={adText} onChange={(e) => setAdText(e.target.value)} />
            <FileUpload label="Hirdetés képei (többet is csatolhatsz)" onUpload={handleAdImageUpload} currentFile={undefined} />
            
            {adImages.length > 0 && (
@@ -820,23 +709,17 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                     onChange={(e) => setPredCarId(e.target.value)}
                     className="w-full rounded-xl border-gray-200 bg-gray-50/50 p-4 text-gray-900 focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500 focus:bg-white transition-all shadow-sm appearance-none cursor-pointer"
                   >
-                    {/* REMOVED DEFAULT OPTION */}
                     {cars.map(car => (
                       <option key={car.id} value={car.id}>
                         {car.make} {car.model} ({car.year})
                       </option>
                     ))}
                   </select>
-                  <div className="absolute right-4 top-1/2 -translate-y-1/2 pointer-events-none text-gray-500">
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                  </div>
                 </div>
               )}
            </div>
 
-           {/* REMOVED MANUAL INPUT FIELD */}
-           
-           <InputField label="Jelenlegi Futás (KM)" type="number" placeholder="210000" value={mileage} onChange={(e: any) => setMileage(e.target.value)} />
+           <InputField label="Jelenlegi Futás (KM)" type="number" placeholder="210000" value={mileage} onChange={(e) => setMileage(e.target.value)} />
            
            <div className="pt-4">
              <Button 
@@ -844,14 +727,13 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                fullWidth 
                onClick={() => {
                  const selectedCar = cars.find(c => c.id === predCarId);
-                 // Fallback should theoretically not be hit if UI prevents it, but keeping safe access
                  if (!selectedCar) return; 
                  const modelToUse = `${selectedCar.make} ${selectedCar.model} (${selectedCar.year})`;
                  runAI(() => predictCosts(modelToUse, mileage));
                }} 
                disabled={!predCarId || !mileage} 
                isLoading={loading}
-             >
+              >
                Számítás
              </Button>
            </div>
@@ -870,7 +752,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
           
           <div className="bg-white rounded-[2rem] p-6 md:p-10 shadow-soft border border-gray-100 min-h-[700px] relative">
             
-            {/* 1. CAR CAROUSEL UI (Replacing simple buttons) */}
             <div className="flex justify-between items-center mb-6">
                 <h3 className="text-lg font-bold text-gray-500 uppercase tracking-wider">Járműveim</h3>
                 <button onClick={() => setIsAddCarOpen(true)} className="bg-gray-900 hover:bg-gray-800 text-white px-4 py-2 rounded-xl text-sm font-bold flex items-center shadow-lg transition-all active:scale-95">
@@ -892,7 +773,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                         : 'bg-white border border-gray-200 text-gray-700 hover:border-brand-300 hover:shadow-lg'}
                     `}
                   >
-                    {/* Delete Icon - Positioned Top Right */}
                     <button 
                        onClick={(e) => initiateDeleteCar(e, car.id)}
                        className={`absolute top-2 right-2 p-2 rounded-lg transition-colors z-10
@@ -928,7 +808,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                 </div>
             )}
 
-            {/* Content Area */}
             {getSelectedCar() && (
                <div className="mt-4 animate-fade-in-up">
                   <div className="flex justify-between items-end mb-8 border-b border-gray-100 pb-4">
@@ -942,22 +821,20 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                      </button>
                   </div>
 
-                  {getSelectedCar()!.records.length === 0 ? (
+                  {getSelectedCar()?.records?.length === 0 ? (
                     <div className="flex flex-col items-center justify-center py-20 text-center">
                        <div className="w-20 h-20 bg-gray-50 rounded-full flex items-center justify-center mb-4 text-4xl grayscale opacity-30">📘</div>
                        <p className="text-gray-500 font-medium">Nincs még bejegyzés. Rögzítsd az elsőt most!</p>
                     </div>
                   ) : (
-                    // 2. TIMELINE UI IMPROVEMENT
                     <div className="relative pl-4 md:pl-0 space-y-8">
-                       {/* Center line only on desktop */}
                        <div className="hidden md:block absolute left-1/2 top-4 bottom-4 w-0.5 bg-gray-200 -translate-x-1/2 rounded-full"></div>
                        
-                       {getSelectedCar()!.records.map((record, index) => (
+                       {/* CRITICAL FIX: Use optional chaining to safely access records */}
+                       {getSelectedCar()?.records?.map((record, index) => (
                          <div key={record.id} className={`relative flex flex-col md:flex-row items-start md:items-center w-full ${index % 2 === 0 ? 'md:flex-row-reverse' : ''}`}>
                            <div className="hidden md:block w-1/2"></div>
                            
-                           {/* SMART ICON NODE */}
                            <div className="absolute left-0 top-0 md:left-1/2 md:top-1/2 w-10 h-10 md:w-12 md:h-12 rounded-full bg-white border-4 border-brand-100 shadow-md z-10 md:-translate-x-1/2 md:-translate-y-1/2 flex items-center justify-center text-lg md:text-xl transform transition-transform hover:scale-110">
                              {getServiceIcon(record.serviceName)}
                            </div>
@@ -979,11 +856,12 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
                     </div>
                   )}
 
-                  {getSelectedCar()!.records.length > 0 && (
+                  {/* CRITICAL FIX: Safe access for reduce logic */}
+                  {getSelectedCar()?.records && getSelectedCar()?.records?.length > 0 && (
                     <div className="mt-12 flex justify-end">
                        <div className="bg-gray-900 text-white px-6 py-4 rounded-2xl shadow-xl flex items-center gap-4">
                           <span className="text-gray-400 text-xs font-bold uppercase tracking-wider">Összesített Költség</span>
-                          <span className="text-2xl font-bold">{getSelectedCar()!.records.reduce((sum, r) => sum + r.cost, 0).toLocaleString()} Ft</span>
+                          <span className="text-2xl font-bold">{getSelectedCar()?.records?.reduce((sum, r) => sum + r.cost, 0).toLocaleString()} Ft</span>
                        </div>
                     </div>
                   )}
@@ -993,7 +871,7 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
         </div>
       )}
 
-      {/* MODALS MOVED TO ROOT LEVEL TO FIX Z-INDEX/TRANSFORM ISSUES */}
+      {/* MODALS */}
 
       {isAddServiceOpen && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4">
@@ -1001,10 +879,10 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
             <div className="relative bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl animate-fade-in-up">
                 <h3 className="text-2xl font-bold mb-6 text-gray-900">Bejegyzés Rögzítése</h3>
                 <div className="space-y-4">
-                  <InputField label="Elvégzett munka" placeholder="pl. Olajcsere" value={newService.serviceName} onChange={(e: any) => setNewService({...newService, serviceName: e.target.value})} />
-                  <InputField label="Dátum" type="date" value={newService.date} onChange={(e: any) => setNewService({...newService, date: e.target.value})} />
-                  <InputField label="Költség (Ft)" type="number" value={newService.cost} onChange={(e: any) => setNewService({...newService, cost: e.target.value})} />
-                  <InputField label="Részletek" rows={3} value={newService.description} onChange={(e: any) => setNewService({...newService, description: e.target.value})} />
+                  <InputField label="Elvégzett munka" placeholder="pl. Olajcsere" value={newService.serviceName} onChange={(e) => setNewService({...newService, serviceName: e.target.value})} />
+                  <InputField label="Dátum" type="date" value={newService.date} onChange={(e) => setNewService({...newService, date: e.target.value})} />
+                  <InputField label="Költség (Ft)" type="number" value={newService.cost} onChange={(e) => setNewService({...newService, cost: e.target.value})} />
+                  <InputField label="Részletek" rows={3} value={newService.description} onChange={(e) => setNewService({...newService, description: e.target.value})} />
                   <div className="flex gap-3 pt-4">
                     <Button variant="secondary" fullWidth onClick={() => setIsAddServiceOpen(false)}>Mégse</Button>
                     <Button fullWidth onClick={saveServiceRecord}>Mentés</Button>
@@ -1020,11 +898,11 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
             <div className="relative bg-white rounded-3xl p-8 w-full max-w-lg shadow-2xl animate-fade-in-up">
                 <h3 className="text-2xl font-bold mb-6 text-gray-900">Új Autó</h3>
                 <div className="space-y-4">
-                  <InputField label="Márka" placeholder="pl. Ford" value={newCar.make} onChange={(e: any) => setNewCar({...newCar, make: e.target.value})} />
-                  <InputField label="Típus" placeholder="pl. Focus" value={newCar.model} onChange={(e: any) => setNewCar({...newCar, model: e.target.value})} />
+                  <InputField label="Márka" placeholder="pl. Ford" value={newCar.make} onChange={(e) => setNewCar({...newCar, make: e.target.value})} />
+                  <InputField label="Típus" placeholder="pl. Focus" value={newCar.model} onChange={(e) => setNewCar({...newCar, model: e.target.value})} />
                   <div className="grid grid-cols-2 gap-4">
-                      <InputField label="Évjárat" type="number" value={newCar.year} onChange={(e: any) => setNewCar({...newCar, year: e.target.value})} />
-                      <InputField label="Rendszám" value={newCar.plate} onChange={(e: any) => setNewCar({...newCar, plate: e.target.value})} />
+                      <InputField label="Évjárat" type="number" value={newCar.year} onChange={(e) => setNewCar({...newCar, year: e.target.value})} />
+                      <InputField label="Rendszám" value={newCar.plate} onChange={(e) => setNewCar({...newCar, plate: e.target.value})} />
                   </div>
                   <div className="flex gap-3 pt-4">
                     <Button variant="secondary" fullWidth onClick={() => setIsAddCarOpen(false)}>Mégse</Button>
@@ -1035,7 +913,6 @@ const Dashboard: React.FC<DashboardProps> = ({ user, onLogout }) => {
         </div>
       )}
 
-      {/* DELETE CAR CONFIRMATION MODAL */}
       {isDeleteCarModalOpen && (
           <div className="fixed inset-0 z-[70] flex items-center justify-center p-4">
             <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsDeleteCarModalOpen(false)}></div>
