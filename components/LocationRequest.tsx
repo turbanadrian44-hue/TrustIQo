@@ -1,3 +1,4 @@
+
 import React, { useState } from 'react';
 import Button from './Button';
 
@@ -45,16 +46,16 @@ const LocationRequest: React.FC<LocationRequestProps> = ({ onLocationFound, onEr
         </div>
       </div>
       
-      <h3 className="text-3xl font-bold text-gray-900 mb-4 tracking-tight">Közeli Szerelők</h3>
+      <h3 className="text-3xl font-bold text-gray-900 mb-4 tracking-tight">Kezdjük a keresést</h3>
       <p className="text-gray-600 mb-10 leading-relaxed text-lg">
-        Engedélyezd a helymeghatározást, hogy a Trustiqo megtalálja a legmegbízhatóbb, értékelt szerelőket a környékeden.
+        Ahhoz, hogy az AI a releváns, helyi szakembereket tudja rangsorolni, szükségünk van a pozíciódra.
       </p>
       <Button onClick={handleGetLocation} fullWidth isLoading={loading} className="text-lg shadow-xl shadow-brand-500/20">
         Helyzetem Megosztása
       </Button>
       <div className="mt-6 flex items-center justify-center space-x-2 text-gray-400 text-sm">
         <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" /></svg>
-        <span>Az adataid biztonságban vannak.</span>
+        <span>Az adataid titkosítva vannak és nem tároljuk őket.</span>
       </div>
     </div>
   );
