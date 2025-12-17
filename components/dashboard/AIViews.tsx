@@ -1,8 +1,10 @@
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Car, DashboardView, Coordinates } from '../../types';
+import { Car, DashboardView, Coordinates, LoadingState } from '../../types';
 import Button from '../Button';
 import { InputField, FileUpload, ImageFile } from '../DashboardUI';
+import LocationRequest from '../LocationRequest';
+import LoadingScreen from '../LoadingScreen';
 import { analyzeQuote, diagnoseCar, analyzeAd, predictCosts, findTrustworthyMechanics } from '../../services/geminiService';
 import { QuoteResultCard, DiagnosticResultCard, AdResultCard, PredictionResultCard } from '../AIResultCards';
 import ReactMarkdown, { Components } from 'react-markdown';
@@ -14,7 +16,7 @@ interface SplitViewLayoutProps {
     title: string;
     icon: string;
     onBack: () => void;
-    children: React.ReactNode; // Inputs
+    children?: React.ReactNode; // Inputs
     resultNode: React.ReactNode; // Result Display
     loading: boolean;
     outputRef: React.RefObject<HTMLDivElement>;
@@ -84,26 +86,33 @@ export const MechanicSearchView = ({ onBack, showToast }: { onBack: () => void, 
     const [radius, setRadius] = useState(5);
     const [coords, setCoords] = useState<Coordinates | null>(null);
     const [result, setResult] = useState<any | null>(null);
-    const [loading, setLoading] = useState(false);
-    const outputRef = useRef<HTMLDivElement>(null);
+    const [loadingState, setLoadingState] = useState<LoadingState>(LoadingState.IDLE);
+    
+    // We scroll to this ref when results appear
+    const resultsRef = useRef<HTMLDivElement>(null);
 
-    const handleGetLocation = () => {
-        if (!navigator.geolocation) { showToast("Helymeghatározás nem támogatott.", 'error'); return; }
-        setLoading(true);
-        navigator.geolocation.getCurrentPosition(
-          (pos) => { setCoords({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }); setLoading(false); showToast("Sikeres helymeghatározás!", 'success'); },
-          () => { setLoading(false); showToast("Nem sikerült a helymeghatározás.", 'error'); }
-        );
+    const handleLocationFound = (c: Coordinates) => {
+        setCoords(c);
+        showToast("Helyzet sikeresen meghatározva!", 'success');
     };
 
-    const handleSearch = async () => {
+    const handleSearch = async (e: React.FormEvent) => {
+        e.preventDefault();
         if (!coords || !problem) return;
-        setLoading(true);
+        setLoadingState(LoadingState.ANALYZING);
         try {
             const res = await findTrustworthyMechanics(problem, coords, radius);
             setResult(res);
-        } catch (e: any) { showToast(e.message, 'error'); } 
-        finally { setLoading(false); }
+            setLoadingState(LoadingState.SUCCESS);
+        } catch (e: any) { 
+            showToast(e.message, 'error'); 
+            setLoadingState(LoadingState.ERROR);
+        }
+    };
+
+    const resetSearch = () => {
+        setResult(null);
+        setLoadingState(LoadingState.IDLE);
     };
 
     const markdownComponents: Components = useMemo(() => ({
@@ -114,30 +123,139 @@ export const MechanicSearchView = ({ onBack, showToast }: { onBack: () => void, 
         p: ({node, ...props}) => <span className="inline leading-relaxed text-gray-700" {...props} />,
     }), []);
 
-    useEffect(() => { if (result && outputRef.current && window.innerWidth < 1024) outputRef.current.scrollIntoView({ behavior: 'smooth' }); }, [result]);
+    useEffect(() => { 
+        if (result && resultsRef.current) {
+            // Slight delay to ensure render
+            setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 100);
+        }
+    }, [result]);
 
     return (
-        <SplitViewLayout title="Szerelő Kereső" icon="📍" onBack={onBack} loading={loading} outputRef={outputRef} resultNode={result && (
-            <div className="w-full space-y-6 animate-fade-in-up">
-                <div className="mb-4 flex items-end justify-between border-b border-gray-200 pb-2">
-                   <div><h3 className="text-xl font-bold text-gray-900">Találatok</h3><p className="text-xs text-gray-500">A bizalmi index alapján rangsorolva</p></div>
+        <div className="animate-fade-in-up pb-12 max-w-4xl mx-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between mb-8">
+                <button 
+                  onClick={onBack} 
+                  className="group flex items-center text-gray-500 hover:text-brand-600 font-bold transition-colors px-3 py-2 rounded-lg hover:bg-white border border-transparent hover:border-gray-200 text-sm"
+                >
+                  <svg className="w-4 h-4 mr-2 group-hover:-translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" /></svg>
+                  Vissza a vezérlőpultra
+                </button>
+                <div className="flex items-center gap-2">
+                   <span className="text-2xl">📍</span>
+                   <h2 className="text-xl font-bold text-gray-900">Szerelő Kereső</h2>
                 </div>
-                <ReactMarkdown components={markdownComponents}>{result.text}</ReactMarkdown>
             </div>
-        )}>
-           <div className="mb-4">
-              <label className="block text-xs font-bold text-gray-500 uppercase tracking-wider mb-2 pl-1">Jelenlegi Pozíció</label>
-              <button onClick={handleGetLocation} className={`w-full flex items-center justify-center px-4 py-3 rounded-xl border font-bold text-sm transition-all ${coords ? 'bg-green-50 text-green-700 border-green-200' : 'bg-white text-gray-600 border-gray-200 hover:border-brand-300'}`}>
-                {coords ? <>Helyzet rögzítve</> : <>Helyzetem meghatározása</>}
-              </button>
-           </div>
-           <InputField label="Mi a probléma? (Tünetek)" rows={4} placeholder="pl. Furcsa kopogás..." value={problem} onChange={(e) => setProblem(e.target.value)} />
-           <div className="mb-4">
-              <div className="flex justify-between items-center mb-1 px-1"><label className="text-xs font-bold text-gray-500 uppercase">Keresési Sugár</label><span className="text-sm font-bold text-brand-600 bg-brand-50 px-2 py-1 rounded-lg">{radius} km</span></div>
-              <input type="range" min="1" max="50" value={radius} onChange={(e) => setRadius(Number(e.target.value))} className="w-full cursor-pointer" />
-           </div>
-           <Button variant="primary" fullWidth onClick={handleSearch} disabled={!problem || !coords} isLoading={loading}>Keresés Indítása</Button>
-        </SplitViewLayout>
+
+            {/* Stage 1: Location Request */}
+            {!coords && (
+                <div className="flex flex-col items-center justify-center py-10">
+                    <div className="w-full max-w-lg">
+                      <LocationRequest 
+                        onLocationFound={handleLocationFound} 
+                        onError={(msg) => showToast(msg, 'error')} 
+                      />
+                    </div>
+                </div>
+            )}
+
+            {/* Stage 2: Form */}
+            {coords && !result && loadingState !== LoadingState.ANALYZING && (
+              <div className="max-w-2xl mx-auto animate-fade-in-up">
+                <div className="text-center mb-8">
+                   <h2 className="text-3xl font-bold text-gray-900 tracking-tight">Miben segíthetünk?</h2>
+                   <p className="text-gray-500 mt-2">Az AI elemezni fogja a környékbeli szerelők értékeléseit és visszajelzéseit.</p>
+                </div>
+                
+                <div className="bg-white rounded-3xl p-8 md:p-10 shadow-xl border border-gray-100">
+                  <form onSubmit={handleSearch} className="space-y-8">
+                    <div>
+                      <label htmlFor="problem" className="block text-xs font-bold text-gray-400 mb-2 uppercase tracking-wider pl-1">
+                        Mi a probléma? (Tünetek, Hibaüzenet)
+                      </label>
+                      <div className="relative">
+                        <textarea
+                          id="problem"
+                          rows={3}
+                          className="w-full rounded-2xl border border-gray-200 bg-gray-50 p-5 text-lg text-gray-900 placeholder-gray-400 focus:ring-4 focus:ring-brand-500/10 focus:border-brand-500 focus:bg-white transition-all resize-none shadow-inner"
+                          placeholder="pl. Furcsa kopogás a jobb elejéről, Check Engine lámpa világít..."
+                          value={problem}
+                          onChange={(e) => setProblem(e.target.value)}
+                          required
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex justify-between items-center mb-4 px-1">
+                         <label className="block text-xs font-bold text-gray-400 uppercase tracking-wider">
+                          Keresési Sugár
+                        </label>
+                        <span className="text-lg font-bold text-brand-600 bg-brand-50 px-3 py-1 rounded-lg border border-brand-100 min-w-[80px] text-center">
+                          {radius} km
+                        </span>
+                      </div>
+                      
+                      <div className="relative py-2 px-1">
+                         <input
+                          type="range"
+                          min="1"
+                          max="50"
+                          value={radius}
+                          onChange={(e) => setRadius(Number(e.target.value))}
+                          className="w-full z-20 focus:outline-none cursor-pointer"
+                        />
+                      </div>
+                      <div className="flex justify-between text-xs text-gray-400 mt-2 px-1 font-medium">
+                        <span>Közelben</span>
+                        <span>Távolabb</span>
+                      </div>
+                    </div>
+
+                    <Button type="submit" fullWidth className="text-lg py-4 shadow-xl shadow-brand-600/20">
+                      Elemzés Indítása
+                    </Button>
+                  </form>
+                </div>
+              </div>
+            )}
+
+            {/* Stage 3: Loading */}
+            {loadingState === LoadingState.ANALYZING && (
+              <LoadingScreen />
+            )}
+
+            {/* Stage 4: Results */}
+            {result && (
+              <div ref={resultsRef} className="max-w-3xl mx-auto animate-fade-in-up pb-10">
+                <div className="mb-8 flex items-end justify-between border-b border-gray-100 pb-4">
+                   <div>
+                     <h3 className="text-2xl font-bold text-gray-900">
+                        Találatok
+                     </h3>
+                     <p className="text-sm text-gray-500 mt-1">A bizalmi index alapján rangsorolva</p>
+                   </div>
+                   <span className="text-sm font-medium text-brand-600 bg-brand-50 px-3 py-1 rounded-full shadow-sm border border-brand-100 flex items-center">
+                     <svg className="w-4 h-4 mr-1" fill="currentColor" viewBox="0 0 20 20"><path fillRule="evenodd" d="M6.267 3.455a3.066 3.066 0 001.745-.723 3.066 3.066 0 013.976 0 3.066 3.066 0 001.745.723 3.066 3.066 0 012.812 2.812c.051.643.304 1.254.723 1.745a3.066 3.066 0 010 3.976 3.066 3.066 0 00-.723 1.745 3.066 3.066 0 01-2.812 2.812 3.066 3.066 0 00-1.745.723 3.066 3.066 0 010-3.976 3.066 3.066 0 00.723-1.745 3.066 3.066 0 012.812-2.812zm7.44 5.252a1 1 0 00-1.414-1.414L9 10.586 7.707 9.293a1 1 0 00-1.414 1.414l2 2a1 1 0 001.414 0l4-4z" clipRule="evenodd"/></svg>
+                     Ellenőrizve
+                   </span>
+                </div>
+
+                <div className="space-y-6">
+                   <ReactMarkdown components={markdownComponents}>
+                     {result.text}
+                   </ReactMarkdown>
+                </div>
+                
+                <div className="mt-12 text-center bg-gray-50 p-6 rounded-2xl border border-gray-100">
+                   <p className="text-gray-600 mb-4">Új keresést szeretnél indítani?</p>
+                   <button onClick={resetSearch} className="text-brand-600 hover:text-brand-800 font-bold text-lg hover:underline decoration-2 underline-offset-4 transition-colors">
+                     Paraméterek módosítása
+                   </button>
+                </div>
+              </div>
+            )}
+        </div>
     );
 };
 

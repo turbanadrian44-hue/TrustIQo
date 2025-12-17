@@ -230,9 +230,15 @@ export const PredictionResultCard = ({ data }: { data: PredictionResult }) => {
                <div key={i} className="relative">
                   <div className="absolute -left-[21px] top-1 w-3 h-3 bg-brand-500 rounded-full border-2 border-white shadow-sm"></div>
                   <h5 className="font-bold text-gray-800">{item.item}</h5>
-                  <div className="flex justify-between text-sm mt-1">
-                     <span className="text-gray-500">Esedékesség: {item.dueInKm}</span>
-                     <span className="font-semibold text-brand-600">{item.estimatedCost}</span>
+                  <div className="flex flex-col sm:flex-row sm:justify-between text-sm mt-1 gap-1 sm:gap-0">
+                     <span className="text-gray-500">
+                        Esedékes km állás: <span className="font-semibold text-gray-900">
+                           {item.dueInKm}{!item.dueInKm.toLowerCase().includes('km') && ' km'}
+                        </span>
+                     </span>
+                     <span className="font-bold text-brand-600 bg-brand-50 px-2 py-0.5 rounded self-start sm:self-auto">
+                        ~{item.estimatedCost}
+                     </span>
                   </div>
                </div>
              ))}

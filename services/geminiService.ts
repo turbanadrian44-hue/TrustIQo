@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, Type, Schema } from "@google/genai";
 import { AnalysisResult, Coordinates, QuoteAnalysisResult, DiagnosticResult, AdAnalysisResult, PredictionResult } from "../types";
 
@@ -106,9 +107,23 @@ export const findTrustworthyMechanics = async (
     });
 
     const text = response.text || "Nem sikerült részletes elemzést készíteni.";
-    const groundingChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
+    const rawChunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks || [];
 
-    return { text, shops: groundingChunks };
+    // Map SDK chunks to internal strict GroundingChunk type
+    const shops = rawChunks.map((chunk: any) => ({
+      web: chunk.web ? {
+        uri: chunk.web.uri || '',
+        title: chunk.web.title || ''
+      } : undefined,
+      maps: chunk.maps ? {
+        uri: chunk.maps.uri || '',
+        title: chunk.maps.title || '',
+        placeId: chunk.maps.placeId,
+        placeAnswerSources: chunk.maps.placeAnswerSources
+      } : undefined
+    }));
+
+    return { text, shops };
 
   } catch (error: any) {
     console.error("Gemini API Error:", error);
@@ -261,9 +276,14 @@ export const predictCosts = async (carModel: string, mileage: string): Promise<P
     contents: { parts: [{ text: `
       Autófenntartási szakértő vagy.
       Típus: ${carModel}
-      Futás: ${mileage} km
+      Jelenlegi futás: ${mileage} km
       
-      Adj konkrét előrejelzést.
+      Adj konkrét előrejelzést a várható költségekről és karbantartásokról.
+      
+      FONTOS UTASÍTÁS A "dueInKm" MEZŐHÖZ:
+      A "dueInKm" mezőbe AZT A KONKRÉT KILOMÉTERÓRA ÁLLÁST ÍRD, amikor a karbantartás esedékes lesz.
+      Pl. ha most 100.000-nél tart az autó, és 120.000-nél kell vezérlést cserélni, akkor írd azt: "120000".
+      Lehetőleg CSAK A SZÁMOT írd (pl. "120000"), mértékegység nélkül, hogy a rendszer formázhassa.
     `}]},
     config: {
       responseMimeType: "application/json",
